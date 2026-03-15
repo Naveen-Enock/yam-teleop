@@ -1,0 +1,32 @@
+# GELLO leader arm configuration
+baudrate: 1000000
+
+left:
+  # Set to your left GELLO adapter, e.g. /dev/serial/by-id/usb-FTDI_...-if00-port0
+  # (run `ls /dev/serial/by-id/` to find it).
+  port: /dev/serial/by-id/CHANGE_ME_LEFT_GELLO
+  joint_ids: [1, 2, 3, 4, 5, 6]
+  # vertical grip works nicely
+  joint_offsets: [0.08410, 5.03739, 4.08939, 3.14159, 3.14159, 3.14159]
+  # joint_offsets: [5.58159, 5.03739, 4.08939, 3.14159, 3.14159, 1.5708]
+  joint_signs: [1.0, -1.0, -1.0, -1.0, 1.0, 1.0]
+  # gripper_config: [7, 56, 116]  # [servo_id, open_degrees, close_degrees]
+  # NOTE: comment is misleading — first value is the raw angle at FULLY
+  # CLOSED (normalizes to 0), second is FULLY OPEN (normalizes to 1).
+  # collect_data treats gripper_pos < 0.1 as closed.
+  gripper_config: [7, 66, 109]
+
+right:
+  # Set to your right GELLO adapter (run `ls /dev/serial/by-id/` to find it).
+  port: /dev/serial/by-id/CHANGE_ME_RIGHT_GELLO
+  joint_ids: [1, 2, 3, 4, 5, 6]
+  # vertical grip works nicely
+  joint_offsets: [2.95119, 6.76319, 5.17839, 4.71239, 1.5708, 4.71239]
+  # joint_offsets: [3.73659, 6.76319, 5.17839, 4.71239, 1.5708, 6.28319]
+  joint_signs: [1.0, -1.0, -1.0, -1.0, 1.0, 1.0]
+  # gripper_config: [7, 56, 116]
+  gripper_config: [7, 66, 109]
+
+publish_rate_hz: 200
+zmq_port: 5004
+zmq_cmd_port: 5006    # commands: position targets + torque control (PULL)

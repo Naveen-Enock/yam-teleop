@@ -1,0 +1,25 @@
+# Camera node configuration
+cameras:
+  top:
+    device_id: 2
+  left_wrist:
+    device_id: 4
+  right_wrist:
+    device_id: 0
+
+resolution: [1920, 1080]
+fps: 60
+codec: MJPG
+
+# Manual exposure/white balance settings
+exposure: 350.0
+brightness: 10.0
+saturation: 50.0
+contrast: 0.0
+sharpness: 4.0
+white_balance: 3000
+
+zmq_port: 5001
+# Metadata-only PUB port: same JSON header as zmq_port without image bytes.
+# Used by sync broker to learn camera timestamps cheaply.
+meta_zmq_port: 5008

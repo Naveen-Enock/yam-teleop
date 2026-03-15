@@ -1,0 +1,6 @@
+[submodule "third_party/gello_software"]
+	path = third_party/gello_software
+	url = git@github.com:alanwlm/gello_software.git
+[submodule "third_party/i2rt"]
+	path = third_party/i2rt
+	url = git@github.com:alanwlm/i2rt.git

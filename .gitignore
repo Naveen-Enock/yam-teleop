@@ -1,0 +1,16 @@
+# Recorded data
+data/
+*.h5
+*.hdf5
+*.mp4
+*.avi
+*.wav
+*.pkl
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+build/
+dist/

@@ -1,0 +1,22 @@
+# Sync broker configuration
+
+# Subscriber ports (input)
+# GELLO state is read directly from gello_node by clients (env.get_latest_gello),
+# not via the broker. Camera image bytes also bypass the broker — clients
+# subscribe to the camera image stream directly. The broker only consumes the
+# camera-metadata-only stream (timestamps) and the robot state stream.
+camera_meta_port: 5008
+robot_port: 5002
+
+# Publisher port (output)
+publish_port: 5005
+
+# Health thresholds
+# If robot stream is older than this, broker halts and waits for recovery
+staleness_threshold_ms: 50
+
+# Per-stream interpolation overrides (default: linear for all fields)
+# Fields listed under "nearest" use nearest-neighbor instead of lerp
+interpolation:
+  robot:
+    nearest: [joint_eff, gripper_eff]

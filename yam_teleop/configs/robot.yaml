@@ -1,0 +1,28 @@
+# YAM robot arm configuration
+left:
+  can_channel: can_left
+  gripper_type: crank_4310
+  zero_gravity_mode: true
+
+right:
+  can_channel: can_right
+  gripper_type: crank_4310
+  zero_gravity_mode: true
+
+publish_rate_hz: 200
+zmq_state_port: 5002
+zmq_cmd_port: 5003
+
+# Gripper open limit in command space (1.0 = fully open, hardware can't reach it)
+gripper_max_open: 0.85
+
+# Safe shutdown: arms return to this position before motors off
+# [joint1..6, gripper] per arm — gripper value clamped by gripper_max_open
+home_position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.85]
+
+# Max joint movement per step during shutdown reset (radians)
+shutdown_max_delta: 0.01
+
+# Gripper force limit when clogged (Newtons). Lower = safer for rigid objects.
+# Existing default was 50.0. Set lower for teleop safety.
+gripper_max_force: 30.0
