@@ -1,0 +1,18 @@
+# Mock camera config — synthetic frames, NO USB hardware (dev/testing).
+# Same node as camera.yaml; `mock: true` switches it to MockCamera so the
+# sync_broker / env / recording pipeline runs unchanged without cameras.
+mock: true
+
+cameras:
+  top: {}
+  left_wrist: {}
+  right_wrist: {}
+
+# Smaller than production (1920x1080) so synthetic generation stays light.
+# Bump to [1920, 1080] if you need production-sized frames/videos.
+resolution: [640, 480]
+fps: 60
+codec: MJPG
+
+zmq_port: 5001
+meta_zmq_port: 5008

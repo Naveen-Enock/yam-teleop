@@ -18,6 +18,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
 import cv2
+from loop_rate_limiters import RateLimiter
 import numpy as np
 from tqdm import tqdm
 import yaml
@@ -102,6 +103,47 @@ class USBCamera:
             self.cap.release()
 
 
+class MockCamera:
+    """Synthetic camera for dev/testing without USB hardware.
+
+    Enabled via `mock: true` in the camera config. Produces a moving BGR
+    pattern with the camera name + frame counter, so the full pipeline
+    (sync_broker, env, recording) runs byte-for-byte unchanged. Same
+    read()/close() interface as USBCamera.
+    """
+
+    _BASE_COLORS = {
+        "top": (50, 30, 30),
+        "left_wrist": (30, 50, 30),
+        "right_wrist": (30, 30, 50),
+    }
+
+    def __init__(self, name: str, width: int, height: int, fps: int = 60):
+        self.name = name
+        self.width = width
+        self.height = height
+        self._count = 0
+        self._color = self._BASE_COLORS.get(name, (40, 40, 40))
+        print(f"[{name}] Initialized MOCK camera: {width}x{height} @ {fps}Hz (synthetic)")
+
+    def read(self) -> np.ndarray:
+        # Instant — the main loop's RateLimiter paces mock mode to fps (a
+        # per-read sleep would stack on top of generation/publish time).
+        frame = np.empty((self.height, self.width, 3), dtype=np.uint8)
+        frame[:] = self._color
+        # Moving vertical bar so consecutive frames visibly differ.
+        x = int((self._count * 7) % self.width)
+        cv2.rectangle(frame, (x, 0), (min(x + 40, self.width), self.height),
+                      (200, 200, 200), -1)
+        cv2.putText(frame, f"{self.name} MOCK f{self._count}", (30, 70),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
+        self._count += 1
+        return frame
+
+    def close(self) -> None:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser(description="Camera node")
     parser.add_argument("--config", required=True, help="Path to camera.yaml")
@@ -122,23 +164,31 @@ def main():
     # ~36 MB/frame just to learn the camera timestamp.
     meta_port = cfg.get("meta_zmq_port", port + 4)
 
-    # Initialize cameras
+    # Initialize cameras. `mock: true` swaps in synthetic cameras so the node
+    # runs without USB hardware (dev/testing); the hardware-only tuning fields
+    # (exposure, white_balance, ...) are not required in a mock config.
+    mock = bool(cfg.get("mock", False))
+    if mock:
+        print("*** MOCK CAMERA MODE — publishing synthetic frames (no USB) ***")
     cameras = OrderedDict()
     for name, cam_cfg in cfg["cameras"].items():
-        cameras[name] = USBCamera(
-            name=name,
-            device_id=cam_cfg["device_id"],
-            width=width,
-            height=height,
-            fps=fps,
-            codec=codec,
-            exposure=cfg["exposure"],
-            brightness=cfg["brightness"],
-            saturation=cfg["saturation"],
-            contrast=cfg["contrast"],
-            sharpness=cfg["sharpness"],
-            white_balance=cfg["white_balance"],
-        )
+        if mock:
+            cameras[name] = MockCamera(name=name, width=width, height=height, fps=fps)
+        else:
+            cameras[name] = USBCamera(
+                name=name,
+                device_id=cam_cfg["device_id"],
+                width=width,
+                height=height,
+                fps=fps,
+                codec=codec,
+                exposure=cfg["exposure"],
+                brightness=cfg["brightness"],
+                saturation=cfg["saturation"],
+                contrast=cfg["contrast"],
+                sharpness=cfg["sharpness"],
+                white_balance=cfg["white_balance"],
+            )
 
     camera_names = list(cameras.keys())
 
@@ -202,6 +252,9 @@ def main():
     print(f"Camera node publishing on :{port} (images) and :{meta_port} (meta) "
           f"at {fps}Hz{' (display ON)' if show_display else ''}")
     pbar = tqdm(desc="Camera node", unit="fr", smoothing=0.05, mininterval=1.0)
+    # Real cameras self-pace via the blocking USB read; mock cameras return
+    # instantly, so cap the loop to fps here.
+    mock_rate = RateLimiter(frequency=fps, warn=False) if mock else None
 
     try:
         while running:
@@ -236,6 +289,8 @@ def main():
                 pbar.set_postfix_str(f"display={display_fps[0]:.0f}fps")
 
             pbar.update(1)
+            if mock_rate is not None:
+                mock_rate.sleep()
 
     except RuntimeError as e:
         print(f"FATAL: {e}", file=sys.stderr)
