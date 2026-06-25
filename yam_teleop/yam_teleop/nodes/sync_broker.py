@@ -176,8 +176,8 @@ def main():
     robot_nearest = set(interp_cfg.get("robot", {}).get("nearest", []))
 
     # Ring buffer for robot state. At 200Hz, 200 samples = 1 second of history.
-    # GELLO state is recorded directly from gello_node by clients (see env.py
-    # get_latest_gello), bypassing the broker entirely.
+    # Leader state is published directly by the leader node and read by clients
+    # via env.get_latest_gello(), bypassing the broker entirely.
     robot_buffer = TimestampedBuffer("robot", maxlen=200,
                                      nearest_fields=robot_nearest)
 

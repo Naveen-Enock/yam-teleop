@@ -1,0 +1,27 @@
+# uv workspace root for yam-teleop development.
+#
+# Aggregates the editable workspace members we develop against: the vendored
+# i2rt YAM SDK (third_party/i2rt submodule) and yam_teleop. A single
+#   uv sync                    -> i2rt + yam_teleop (editable)
+#   uv sync --extra transcribe -> + faster-whisper transcription
+[project]
+name = "yam-teleop-dev"
+version = "0"
+requires-python = ">=3.10"
+dependencies = [
+    "i2rt",
+    "yam_teleop",
+]
+
+[project.optional-dependencies]
+transcribe = ["yam_teleop[transcribe]"]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["third_party/i2rt", "yam_teleop"]
+
+[tool.uv.sources]
+i2rt = { workspace = true }
+yam_teleop = { workspace = true }

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yam_teleop"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "gymnasium",
+    "pyzmq",
+    "opencv-python",
+    "numpy",
+    "pyyaml",
+    "h5py",                # HDF5 episode read/write (collect_yam, replay_episode)
+    "tqdm",                # progress bars (camera/robot/leader nodes, broker)
+    "loop-rate-limiters",  # fixed-rate control loops (robot_node, leader nodes)
+    "pyaudio",             # per-episode audio capture (record_audio) — needs system portaudio
+    "matplotlib",          # collect plotting + live gripper plot
+    "pyqt5",               # interactive backend for robot_node --plot-gripper live window
+]
+
+[project.optional-dependencies]
+# Audio transcription (transcribe_audio.py). Heavy / GPU-oriented:
+# faster-whisper pulls ctranslate2 / av / tokenizers. Opt-in only.
+transcribe = [
+    "faster-whisper",
+]
+
+[tool.setuptools.packages.find]
+include = ["yam_teleop*"]

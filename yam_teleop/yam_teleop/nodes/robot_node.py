@@ -16,10 +16,10 @@ from tqdm import tqdm
 import yaml
 import zmq
 
-from gello.robots.yam import YAMRobot
+from yam_teleop.hardware.yam_follower import YamFollower
 
 
-def safe_return_to_home(left_arm: YAMRobot, right_arm: YAMRobot,
+def safe_return_to_home(left_arm: YamFollower, right_arm: YamFollower,
                         home: np.ndarray, max_delta: float) -> None:
     """Gradually move both arms to home position before shutdown."""
     print("Safe shutdown: returning arms to home position...")
@@ -57,9 +57,9 @@ def safe_return_to_home(left_arm: YAMRobot, right_arm: YAMRobot,
         print("  Shutdown interrupted — stopping where we are.")
 
 
-def make_yam_arm(arm_cfg: dict, gripper_max_force: float) -> YAMRobot:
-    """Create a YAMRobot from config."""
-    return YAMRobot(
+def make_yam_arm(arm_cfg: dict, gripper_max_force: float) -> YamFollower:
+    """Create a follower YAM arm from config."""
+    return YamFollower(
         channel=arm_cfg["can_channel"],
         gripper_type=arm_cfg["gripper_type"],
         zero_gravity_mode=arm_cfg["zero_gravity_mode"],

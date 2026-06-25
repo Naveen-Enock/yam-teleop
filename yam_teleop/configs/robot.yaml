@@ -1,28 +1,34 @@
-# YAM robot arm configuration
+# YAM follower robot arm configuration
+#
+# Gripper: linear_4310. NOTE: unlike crank_4310, this gripper AUTO-CALIBRATES on
+# startup (needs_calibration=True) — robot_node will open/close each gripper to
+# find its range during init. Keep the grippers UNOBSTRUCTED at launch.
+# (The previous crank_4310 + can_left/can_right config is in git history.)
 left:
-  can_channel: can_left
-  gripper_type: crank_4310
+  can_channel: can_follower_l
+  gripper_type: linear_4310
   zero_gravity_mode: true
 
 right:
-  can_channel: can_right
-  gripper_type: crank_4310
+  can_channel: can_follower_r
+  gripper_type: linear_4310
   zero_gravity_mode: true
 
 publish_rate_hz: 200
 zmq_state_port: 5002
 zmq_cmd_port: 5003
 
-# Gripper open limit in command space (1.0 = fully open, hardware can't reach it)
-gripper_max_open: 0.85
+# Gripper open limit in command space. linear_4310 calibrates its own range, so
+# the normalized command is ~0 (closed) .. 1 (open). TODO(hardware): confirm the
+# open extent; lower this if the gripper over-travels or pushes against its stop.
+gripper_max_open: 1.0
 
 # Safe shutdown: arms return to this position before motors off
 # [joint1..6, gripper] per arm — gripper value clamped by gripper_max_open
-home_position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.85]
+home_position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
 
 # Max joint movement per step during shutdown reset (radians)
 shutdown_max_delta: 0.01
 
-# Gripper force limit when clogged (Newtons). Lower = safer for rigid objects.
-# Existing default was 50.0. Set lower for teleop safety.
+# Gripper force limit (Newtons). Lower = safer for rigid objects.
 gripper_max_force: 30.0
