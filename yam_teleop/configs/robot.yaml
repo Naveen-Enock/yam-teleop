@@ -31,4 +31,4 @@ home_position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
 shutdown_max_delta: 0.01
 
 # Gripper force limit (Newtons). Lower = safer for rigid objects.
-gripper_max_force: 30.0
+gripper_max_force: 10.0

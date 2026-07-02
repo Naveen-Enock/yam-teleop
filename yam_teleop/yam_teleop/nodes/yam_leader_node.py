@@ -69,7 +69,10 @@ class LeaderArm:
     """One YAM leader arm + its teaching-handle encoder (trigger + buttons)."""
 
     def __init__(self, channel: str, gripper_invert: bool = True,
-                 gravity_comp_factor: float = 1.0):
+                 gravity_comp_factor: float = 1.0,
+                 dither_amp=None, dither_freq: float = 30.0,
+                 dither_vel_threshold=None,
+                 spring_kp=None, spring_kd=None, spring_target=None):
         from i2rt.robots.get_robot import get_yam_robot
         from i2rt.robots.utils import GripperType
 
@@ -92,6 +95,36 @@ class LeaderArm:
         self.n = len(self.nominal_kp)  # 6 — a teaching handle has no gripper motor
         self._zero = np.zeros(self.n)
         self._gripper_invert = gripper_invert
+
+        # Optional per-joint stiction dither (torque channel; works even at
+        # kp=kd=0). Off unless dither_amp has a nonzero entry. See leader.yaml.
+        amp = (np.zeros(self.n) if dither_amp is None
+               else np.asarray(dither_amp, dtype=np.float64))
+        if amp.shape != (self.n,):
+            raise ValueError(f"dither_amp must have {self.n} entries, got {amp.shape}")
+        if np.any(amp != 0.0):
+            self.robot.dither_amp = amp
+            self.robot.dither_freq = float(dither_freq)
+            self.robot.dither_vel_threshold = (
+                None if dither_vel_threshold is None else float(dither_vel_threshold))
+
+        # Optional per-joint PD virtual spring toward spring_target (torque
+        # channel; active in every mode). Off unless spring_kp has a nonzero
+        # entry. See leader.yaml.
+        skp = (np.zeros(self.n) if spring_kp is None
+               else np.asarray(spring_kp, dtype=np.float64))
+        if skp.shape != (self.n,):
+            raise ValueError(f"spring_kp must have {self.n} entries, got {skp.shape}")
+        if np.any(skp != 0.0):
+            skd = (np.zeros(self.n) if spring_kd is None
+                   else np.asarray(spring_kd, dtype=np.float64))
+            stg = (np.zeros(self.n) if spring_target is None
+                   else np.asarray(spring_target, dtype=np.float64))
+            if skd.shape != (self.n,) or stg.shape != (self.n,):
+                raise ValueError(f"spring_kd/spring_target must have {self.n} entries")
+            self.robot.spring_kp = skp
+            self.robot.spring_kd = skd
+            self.robot.spring_target = stg
 
     def read(self):
         """Return (joint_pos[n], gripper_pos in 0..1, buttons[2] bools)."""
@@ -299,11 +332,32 @@ def main():
     # is the parked/safe pose, NOT the teleop start pose. See leader.yaml.
     safe_position = np.asarray(cfg.get("safe_position", [0.0] * 6), dtype=np.float64)
     shutdown_max_delta = float(cfg.get("shutdown_max_delta", 0.01))
+    # Per-joint stiction dither (Nm), added to the gravity-comp torque to keep
+    # each joint micro-moving so static friction doesn't grab. Off by default
+    # (all zeros). Tunable per arm under left/right. See leader.yaml.
+    dither_freq = float(cfg.get("dither_freq", 30.0))
+    _dvt = cfg.get("dither_vel_threshold", None)
+    dither_vel_threshold = None if _dvt is None else float(_dvt)
+    dither_amp = cfg.get("dither_amp", [0.0] * 6)
+    dither_amp_left = cfg["left"].get("dither_amp", dither_amp)
+    dither_amp_right = cfg["right"].get("dither_amp", dither_amp)
+    # Per-joint PD virtual spring (kp Nm/rad, kd Nm*s/rad, target rad), applied
+    # to both arms. Always on (torque channel); joints with kp=0 are inert.
+    # See leader.yaml.
+    spring_kp = cfg.get("spring_kp", [0.0] * 6)
+    spring_kd = cfg.get("spring_kd", [0.0] * 6)
+    spring_target = cfg.get("spring_target", [0.0] * 6)
 
     print(f"Initializing left YAM leader arm (gravity_comp_factor={gcf_left})...")
-    left = LeaderArm(cfg["left"]["can_channel"], gripper_invert, gcf_left)
+    left = LeaderArm(cfg["left"]["can_channel"], gripper_invert, gcf_left,
+                     dither_amp_left, dither_freq, dither_vel_threshold,
+                     spring_kp=spring_kp, spring_kd=spring_kd,
+                     spring_target=spring_target)
     print(f"Initializing right YAM leader arm (gravity_comp_factor={gcf_right})...")
-    right = LeaderArm(cfg["right"]["can_channel"], gripper_invert, gcf_right)
+    right = LeaderArm(cfg["right"]["can_channel"], gripper_invert, gcf_right,
+                      dither_amp_right, dither_freq, dither_vel_threshold,
+                      spring_kp=spring_kp, spring_kd=spring_kd,
+                      spring_target=spring_target)
 
     # ZMQ sockets
     ctx = zmq.Context()

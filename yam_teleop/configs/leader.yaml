@@ -1,7 +1,7 @@
 # YAM leader-arm configuration (teaching handles)
 # Two YAM arms with yam_teaching_handle grippers, backdriven in gravity-comp.
-# Per-arm `gravity_comp_factor:` may be added under left/right to override the
-# node-level value below — useful if a worn/beat-up arm needs different tuning.
+# Per-arm `gravity_comp_factor:` / `dither_amp:` may be added under left/right to
+# override the node-level values below — useful if the two arms differ.
 left:
   can_channel: can_leader_l
 right:
@@ -13,6 +13,35 @@ right:
 # gives a clean backdrive. A worn/beat-up arm may float UP at 1.3 — lower it
 # (~1.0) for that arm via a per-arm override under left/right.
 gravity_comp_factor: 1.3
+
+# Stiction dither: a small zero-mean square-wave torque added to each leader
+# joint (ON TOP of gravity comp) to keep it micro-moving so static friction
+# doesn't grab. It rides the torque channel, so it works even in IDLE (kp=kd=0
+# backdrive). Per-joint amplitude in Nm, base->wrist (6 joints, no gripper).
+# START AT 0 and raise each joint until stiction breaks free without a
+# perceptible buzz — the DM4340 base joints (0-2) generally need more than the
+# DM4310 wrist joints (3-5). All zeros = OFF (default). May be overridden per
+# arm under left:/right: if the two arms differ.
+dither_amp: [0.5, 0.5, 0.7, 0.0, 0.0, 0.0]
+dither_freq: 30.0   # Hz; ~30-50 works well (i2rt control loop is ~250Hz)
+# Only dither a joint while it's near-stationary (|vel| < this, rad/s) so the
+# dither doesn't add noise during active motion or leak into the follower.
+# Set to null to dither always.
+dither_vel_threshold: 0.05
+
+# Per-joint PD virtual spring: a restoring torque kp*(target - q) - kd*qdot on
+# selected leader joints, ON TOP of gravity comp (torque channel, so it's active
+# in EVERY mode — idle backdrive AND teleop). Use it to make a joint self-return
+# to / hold a pose. Per-joint arrays, base->wrist; kp=0 disables a joint.
+# Applied to both arms.
+# NOTE: always on, so it also biases the joint during teleop — keep it gentle.
+# The pull grows with distance from target (bounded by the motor torque clip),
+# so a joint far from its target actively drives toward it; lower kp if you only
+# want a gentle near-target hold. Raise kd if it oscillates.
+# Here: joint 2 (0-indexed) is held toward pi/3 (~1.047 rad).
+spring_kp:     [0.0, 0.0, 1.25, 0.0, 0.0, 0.0]   # Nm/rad
+spring_kd:     [0.0, 0.0, 0.25, 0.0, 0.0, 0.0]   # Nm*s/rad
+spring_target: [0.0, 0.0, 1.0471975512, 0.0, 0.0, 0.0]   # rad (joint 2 = pi/3)
 
 # Safety watchdog: the controlling script (collect_yam / teleop_min) sends a
 # heartbeat while alive. If the leader hears nothing for this long while engaged
@@ -41,7 +70,7 @@ robot_state_port: 5002  # follower state stream (robot_node PUB) for bilateral
 #               feedback. Pair with gravity_comp_factor ~1.1 above for a lighter
 #               backdrive (the stiff PD masks the over-compensation either way).
 #   free      - zero stiffness, pure gravity-comp backdrive (old gello feel).
-leader_feel: bilateral
+leader_feel: free
 
 # Bilateral force feedback gain (used when leader_feel: bilateral): scales the
 # arm's nominal joint kp ([80,80,80,40,10,10]) with kd=0. i2rt recommends
