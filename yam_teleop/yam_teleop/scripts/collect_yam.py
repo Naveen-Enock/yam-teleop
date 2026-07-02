@@ -38,10 +38,12 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+import yaml
 import zmq
 
 from yam_teleop.env import YAMBimanualEnv
 from yam_teleop.foot_pedal import FootPedalHub, KEY_AUDIO, KEY_FAILURE, KEY_SUCCESS
+from yam_teleop.scripts.reset_helpers import reset_leader
 from yam_teleop.video import (
     DEFAULT_PRESET,
     VIDEO_PRESETS,
@@ -50,6 +52,37 @@ from yam_teleop.video import (
 
 # Leader trigger value must be below this to count as "closed" (squeezed).
 GRIPPER_CLOSE_THRESHOLD = 0.1
+
+
+def start_leader_heartbeat(port: int, hz: float = 10.0):
+    """Background daemon pinging the leader node so it knows we're alive.
+
+    Runs in its own thread + ZMQ context (sockets aren't thread-safe), so it
+    keeps beating even while the main thread blocks in env.reset() / video
+    encode / HDF5 save. If this process dies hard (kill -9 / segfault) the
+    thread dies with it and the leader's watchdog drops it to IDLE. Returns
+    (stop_event, thread); call stop_event.set() to end it.
+    """
+    stop = threading.Event()
+
+    def loop():
+        ctx = zmq.Context()
+        sock = ctx.socket(zmq.PUSH)
+        sock.setsockopt(zmq.LINGER, 0)
+        sock.connect(f"tcp://127.0.0.1:{port}")
+        period = 1.0 / hz
+        while not stop.is_set():
+            try:
+                sock.send_json({"command": "heartbeat"})
+            except Exception:
+                break
+            stop.wait(period)
+        sock.close()
+        ctx.term()
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    return stop, t
 
 
 class KeyListener:
@@ -91,13 +124,6 @@ class KeyListener:
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._original_settings)
 
 
-def both_grippers_closed(leader_msg: dict, threshold: float) -> bool:
-    """True when both leader triggers are squeezed past the threshold."""
-    left = float(leader_msg["left"]["gripper_pos"])
-    right = float(leader_msg["right"]["gripper_pos"])
-    return left < threshold and right < threshold
-
-
 def leader_msg_to_action(leader_msg: dict):
     """Convert a leader state message to (action_vector, components, ts_ns)."""
     left_jp = np.asarray(leader_msg["left"]["joint_pos"])
@@ -112,71 +138,6 @@ def leader_msg_to_action(leader_msg: dict):
         "right/gripper_pos": right_gp,
     }
     return action, components, int(leader_msg["timestamp_ns"])
-
-
-def reset_leader(env, leader_cmd, home_joints_left, home_joints_right,
-                 gripper_threshold=0.1, joint_speed=0.2, send_hz=200.0,
-                 keys=None):
-    """Drive the leader arms to the follower start pose, then wait for squeeze.
-
-    Same handshake the old reset_gello used: enable_torque -> stream waypoints
-    to the home pose -> hold until both triggers are squeezed -> disable_torque
-    (which the leader node interprets as: RESET stiff-match, then COUPLED).
-    """
-    leader_cmd.send_json({"command": "enable_torque", "gripper_limp": True})
-
-    leader_msg = None
-    deadline = time.monotonic() + 2.0
-    while leader_msg is None and time.monotonic() < deadline:
-        leader_msg = env.get_latest_gello()
-        time.sleep(0.005)
-    if leader_msg is None:
-        raise RuntimeError("No leader messages received after enable_torque")
-
-    current_left = np.asarray(leader_msg["left"]["joint_pos"])
-    current_right = np.asarray(leader_msg["right"]["joint_pos"])
-    target_left = np.array(home_joints_left)
-    target_right = np.array(home_joints_right)
-
-    max_d = max(np.max(np.abs(current_left - target_left)),
-                np.max(np.abs(current_right - target_right)))
-    duration = max(max_d / joint_speed, 0.05)
-    num_steps = max(int(duration * send_hz), 1)
-    print(f"  Leader reset: {num_steps} steps over {duration:.2f}s "
-          f"(max_delta={max_d:.3f} rad)")
-    period = 1.0 / send_hz
-    next_t = time.monotonic()
-    for lw, rw in zip(
-        np.linspace(current_left, target_left, num_steps + 1)[1:],
-        np.linspace(current_right, target_right, num_steps + 1)[1:],
-    ):
-        leader_cmd.send_json({
-            "left": {"joint_pos": lw.tolist(), "gripper_pos": 0.0},
-            "right": {"joint_pos": rw.tolist(), "gripper_pos": 0.0},
-        })
-        next_t += period
-        sleep_for = next_t - time.monotonic()
-        if sleep_for > 0:
-            time.sleep(sleep_for)
-        else:
-            next_t = time.monotonic()
-
-    print("  Leader at neutral. Squeeze both triggers to start...")
-    while True:
-        leader_cmd.send_json({
-            "left": {"joint_pos": target_left.tolist(), "gripper_pos": 0.0},
-            "right": {"joint_pos": target_right.tolist(), "gripper_pos": 0.0},
-        })
-        leader_msg = env.get_latest_gello()
-        if leader_msg is not None and both_grippers_closed(
-                leader_msg, gripper_threshold):
-            break
-        time.sleep(0.005)
-        if keys is not None and keys.get_key() == "q":
-            print(">> Quitting (q in reset_leader)")
-            raise SystemExit("reset-q")
-
-    leader_cmd.send_json({"command": "disable_torque"})
 
 
 def save_episode(path: str, episode: dict, video_info: dict,
@@ -255,6 +216,8 @@ def main():
     codec_config = VIDEO_PRESETS[args.video_codec]
 
     env = YAMBimanualEnv(args.env_config)
+    with open(args.env_config) as f:
+        leader_waypoint = yaml.safe_load(f).get("leader_reset_waypoint")
 
     # Leader command socket (PUSH -> yam_leader_node PULL)
     leader_ctx = zmq.Context()
@@ -262,6 +225,9 @@ def main():
     leader_cmd.setsockopt(zmq.LINGER, 0)
     leader_cmd.connect(f"tcp://127.0.0.1:{args.leader_cmd_port}")
     time.sleep(0.5)
+
+    # Liveness heartbeat -> leader watchdog frees the arm if we die hard.
+    hb_stop, hb_thread = start_leader_heartbeat(args.leader_cmd_port)
 
     # Foot pedals are optional — fall back to keyboard if none are attached.
     try:
@@ -304,14 +270,15 @@ def main():
             # === PHASE 1: RESET FOLLOWER ===
             obs, info = env.reset()
 
-            # === PHASE 2: MATCH LEADER ===
-            print("Resetting leader (match follower, squeeze both triggers)...")
+            # === PHASE 2: MATCH LEADER (waypoint -> follower start pose) ===
+            print("Resetting leader (waypoint -> match follower; squeeze to start)...")
             reset_leader(
-                env, leader_cmd,
-                home_joints_left=env._home_position[:6].tolist(),
-                home_joints_right=env._home_position[7:13].tolist(),
+                leader_cmd, env.get_latest_gello,
+                home_left=env._home_position[:6].tolist(),
+                home_right=env._home_position[7:13].tolist(),
+                waypoint_left=leader_waypoint, waypoint_right=leader_waypoint,
                 gripper_threshold=args.gripper_threshold,
-                keys=keys,
+                quit_check=lambda: keys.get_key() == "q",
             )
             print(">> Leader ready")
 
@@ -356,7 +323,7 @@ def main():
             if hub is not None:
                 hub.clear_pending()  # discard stale pedal presses from reset
             episode_outcome = None
-            was_suspended = False
+            was_paused = False
             last_marker_seq = (leader_msg.get("buttons") or {}).get("marker_seq", 0)
 
             t0 = time.time()
@@ -371,11 +338,15 @@ def main():
                 mode = leader_msg.get("mode", "coupled")
                 key = keys.get_key()
 
-                # --- CLUTCH: pause recording + commanding while suspended ---
-                if mode == "suspended":
-                    if not was_suspended:
-                        print("  >> CLUTCH: paused (follower holding)")
-                        was_suspended = True
+                # --- CLUTCH: pause record + commanding until fully re-coupled.
+                # Pause through BOTH "suspended" and "resume_match": during the
+                # resume slew the follower must stay put (don't chase the
+                # leader's return path), only resuming once mode == "coupled".
+                if mode in ("suspended", "resume_match"):
+                    if not was_paused:
+                        print("  >> CLUTCH: paused (follower holding; "
+                              "clutch again to resume)")
+                        was_paused = True
                     outcome = poll_outcome(key)
                     if outcome is not None:
                         episode_outcome = outcome
@@ -384,9 +355,9 @@ def main():
                         raise SystemExit("paused-q")
                     time.sleep(0.01)
                     continue
-                if was_suspended:
+                if was_paused:
                     print("  >> CLUTCH: resumed")
-                    was_suspended = False
+                    was_paused = False
                     fresh_obs = env.poll_broker_obs(timeout_ms=500)
                     if fresh_obs is not None:
                         obs = fresh_obs
@@ -504,10 +475,15 @@ def main():
         print(f">> Exit cause: {type(e).__name__}: {e}")
         traceback.print_exc()
     finally:
+        hb_stop.set()  # stop the heartbeat so our explicit `free` is the last word
+        # Leave the leader limp (gravity-comp), NOT coupled — otherwise it would
+        # snap toward the follower pose on exit (esp. after a clutch free-float).
         try:
-            leader_cmd.send_json({"command": "disable_torque"})
+            leader_cmd.send_json({"command": "free"})
+            time.sleep(0.1)  # let the PUSH flush before we tear down the context
         except Exception:
             pass
+        hb_thread.join(timeout=1.0)
         if video_writer is not None:
             video_writer.cleanup()
         if tmp_dir is not None:

@@ -19,19 +19,33 @@ State machine (mode field in the published message):
   RESET    stiff PD; slews to streamed position targets. Entered by
            {"command": "enable_torque"} (the reset cycle drives the leader to
            the follower's start pose). torque_enabled=True here (mirrors gello).
-  COUPLED  teleop. Soft bilateral PD: kp = bilateral_kp * nominal_kp pulling the
-           leader toward the follower's measured pose, so the operator feels
-           contact forces. Entered by {"command": "disable_torque"}.
-           bilateral_kp=0 => pure passive backdrive (== old gello feel).
+  COUPLED  teleop. Feel selected by the `leader_feel` config:
+           bilateral - soft PD (kp = bilateral_kp * nominal_kp, kd=0) pulling
+                       the leader toward the follower's measured pose, so the
+                       operator feels contact forces. bilateral_kp=0 => passive.
+           damped    - stiff PD (full nominal kp/kd) chasing the leader's OWN
+                       pose => viscous self-centering backdrive ("raiden feel").
+           free      - zero stiffness, pure gravity-comp backdrive (gello feel).
+           Entered by {"command": "couple"}.
   SUSPENDED  clutch out. kp=0, leader free; the consumer holds the follower.
              Entered by a CLUTCH button press while COUPLED.
-  RESUME_MATCH  clutch in. stiff PD slews the leader to the *follower's* pose
-                (follower never lurches), then auto-advances to COUPLED.
+  RESUME_MATCH  clutch in. stiff PD eases the leader back to the *follower's*
+                pose on a smoothstep profile (gentle, zero velocity/jerk at both
+                ends; resume_speed rad/s), then auto-advances to COUPLED. The
+                follower never lurches (the consumer holds it through resume).
+  (IDLE is also re-entered by {"command": "free"} / "disable_torque" — used on
+   shutdown so the leader stays where it is, no pull toward the follower.)
+
+On the node's OWN Ctrl+C / SIGTERM, both leader arms first ease to a folded safe
+pose (`safe_position` in leader.yaml) under stiff PD, THEN the motors switch off
+— so they settle safely instead of dropping limp. That safe pose is distinct
+from the teleop start pose (the follower's home); mirrors robot_node's follower
+safe return.
 
 Teaching-handle buttons (io_inputs[0], io_inputs[1]; edge-detected; either
 handle counts, i.e. global):
-  - button 0 -> one-shot sub-task MARKER (published as buttons.marker=True for
-                exactly one message).
+  - button 0 -> sub-task MARKER (published as a monotonic buttons.marker_seq
+                that consumers diff — survives their CONFLATE reads).
   - button 1 -> CLUTCH toggle (COUPLED <-> SUSPENDED).
 
 Usage:
@@ -41,6 +55,7 @@ Usage:
 import argparse
 import signal
 import sys
+import threading
 import time
 
 from loop_rate_limiters import RateLimiter
@@ -121,6 +136,125 @@ def _slew(setpoint: np.ndarray, target: np.ndarray, max_delta: float) -> np.ndar
     return setpoint + delta
 
 
+class ClampSlew:
+    """Per-tick position-clamped slew toward a target pose (both arms).
+
+    Used in RESET: the consumer streams reset waypoints in via set_target(); each
+    step() advances the setpoint toward the latest target by at most max_delta
+    per joint, smoothing over any gaps between the streamed waypoints. Owns its
+    own setpoint/target state (no closure / nonlocal).
+    """
+
+    def __init__(self, max_delta: float):
+        self._max_delta = max_delta
+        self.sp_l = self.sp_r = None
+        self.target_l = self.target_r = None
+
+    def restart(self, cur_l, cur_r) -> None:
+        """Begin a fresh slew from the current pose (target = current)."""
+        self.sp_l = np.asarray(cur_l, dtype=np.float64).copy()
+        self.sp_r = np.asarray(cur_r, dtype=np.float64).copy()
+        self.target_l = self.sp_l.copy()
+        self.target_r = self.sp_r.copy()
+
+    def set_target(self, to_l, to_r, cur_l, cur_r) -> None:
+        """Update the target; seed the setpoint from current if not yet started."""
+        self.target_l = np.asarray(to_l, dtype=np.float64)
+        self.target_r = np.asarray(to_r, dtype=np.float64)
+        if self.sp_l is None:
+            self.sp_l = np.asarray(cur_l, dtype=np.float64).copy()
+            self.sp_r = np.asarray(cur_r, dtype=np.float64).copy()
+
+    def step(self):
+        """Advance the setpoint one tick toward the target; return (left, right)."""
+        self.sp_l = _slew(self.sp_l, self.target_l, self._max_delta)
+        self.sp_r = _slew(self.sp_r, self.target_r, self._max_delta)
+        return self.sp_l, self.sp_r
+
+
+class SmoothSlew:
+    """Time-parameterized smoothstep slew between two poses (both arms).
+
+    Used for the clutch RESUME_MATCH return to the follower pose. s = 3a^2 - 2a^3
+    has zero slope at a=0 and a=1, so velocity ramps up and down -> slow,
+    graceful, no jerk. Owns its own trajectory state (no closure / nonlocal).
+    """
+
+    def __init__(self, speed: float, min_dur: float):
+        self._speed = speed
+        self._min_dur = min_dur
+        self.from_l = self.from_r = None
+        self.to_l = self.to_r = None
+        self._t0 = None
+        self._dur = min_dur
+
+    def start(self, from_l, from_r, to_l, to_r) -> float:
+        """Set up a slew from->to; return its duration (s)."""
+        self.from_l = np.asarray(from_l, dtype=np.float64).copy()
+        self.from_r = np.asarray(from_r, dtype=np.float64).copy()
+        self.to_l = np.asarray(to_l, dtype=np.float64).copy()
+        self.to_r = np.asarray(to_r, dtype=np.float64).copy()
+        dist = max(float(np.max(np.abs(self.to_l - self.from_l))),
+                   float(np.max(np.abs(self.to_r - self.from_r))))
+        # Shared duration across both arms so they finish together; floored.
+        self._dur = max(dist / self._speed, self._min_dur)
+        self._t0 = time.monotonic()
+        return self._dur
+
+    def step(self):
+        """Return (left_setpoint, right_setpoint, done) for the current time."""
+        a = (1.0 if self._t0 is None
+             else min((time.monotonic() - self._t0) / self._dur, 1.0))
+        s = a * a * (3.0 - 2.0 * a)
+        left = self.from_l + s * (self.to_l - self.from_l)
+        right = self.from_r + s * (self.to_r - self.from_r)
+        return left, right, a >= 1.0
+
+
+def safe_return_to_pose(left: LeaderArm, right: LeaderArm,
+                        safe: np.ndarray, max_delta: float) -> None:
+    """Gradually drive both leader arms to a safe pose before the motors go off.
+
+    Mirrors robot_node.safe_return_to_home: on the leader node's own Ctrl+C the
+    arms should settle into a folded/parked pose under stiff PD instead of
+    dropping limp. Steps along a linspace at ~60Hz so the move is slow and
+    controlled. This is the parked/safe pose, NOT the teleop start pose (which
+    is the follower's home, streamed in during RESET).
+    """
+    print("Safe shutdown: returning leader arms to safe pose...")
+
+    left_current = left.read()[0]
+    right_current = right.read()[0]
+
+    left_distance = np.max(np.abs(left_current - safe))
+    right_distance = np.max(np.abs(right_current - safe))
+    max_distance = max(left_distance, right_distance)
+
+    if max_distance < 0.05:
+        print("  Already at safe pose; holding.")
+        left.stiff_to(safe)
+        right.stiff_to(safe)
+        return
+
+    num_steps = max(int(max_distance / max_delta), 1)
+    print(f"  Moving to safe pose in {num_steps} steps "
+          f"(max distance: {max_distance:.3f} rad)...")
+
+    left_waypoints = np.linspace(left_current, safe, num_steps + 1)[1:]
+    right_waypoints = np.linspace(right_current, safe, num_steps + 1)[1:]
+
+    try:
+        for i, (lw, rw) in enumerate(zip(left_waypoints, right_waypoints)):
+            left.stiff_to(lw)
+            right.stiff_to(rw)
+            time.sleep(1.0 / 60.0)  # ~60Hz step rate
+            if (i + 1) % 60 == 0:
+                print(f"  {num_steps - (i + 1)} steps remaining...")
+        print("  Safe pose reached.")
+    except KeyboardInterrupt:
+        print("  Shutdown interrupted — stopping where we are.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="YAM leader arm node")
     parser.add_argument("--config", required=True, help="Path to leader.yaml")
@@ -135,13 +269,36 @@ def main():
     cmd_port = cfg.get("zmq_cmd_port", 5006)
     robot_state_port = cfg.get("robot_state_port", 5002)
     bilateral_kp = float(cfg.get("bilateral_kp", 0.0))
+    # Leader feel during COUPLED (active teleop). See leader.yaml for details.
+    #   bilateral - soft PD toward the FOLLOWER pose (force feedback; bilateral_kp)
+    #   damped    - stiff PD (full nominal kp/kd) toward the leader's OWN pose
+    #               (raiden feel: viscous, self-centering backdrive)
+    #   free      - zero stiffness, pure gravity-comp backdrive (gello feel)
+    leader_feel = str(cfg.get("leader_feel", "bilateral")).lower()
+    _valid_feels = ("bilateral", "damped", "free")
+    if leader_feel not in _valid_feels:
+        raise ValueError(
+            f"leader_feel must be one of {_valid_feels}, got {leader_feel!r}")
     gripper_invert = bool(cfg.get("gripper_invert", True))
-    match_max_delta = float(cfg.get("match_max_delta", 0.01))  # rad per tick
-    match_tol = float(cfg.get("match_tol", 0.05))              # rad
+    match_max_delta = float(cfg.get("match_max_delta", 0.01))  # rad per tick (RESET)
+    # Clutch RESUME slew: a gentle eased return to the follower pose. Speed is in
+    # rad/s (the start-reset feel, ~0.4) and a smoothstep profile ramps velocity
+    # from/to zero so there's no jerk; min_duration keeps even tiny moves smooth.
+    resume_speed = float(cfg.get("resume_speed", 0.4))            # rad/s
+    resume_min_dur = float(cfg.get("resume_min_duration", 0.5))   # s
+    # Safety watchdog: if the controller stops sending its heartbeat (or any
+    # command) for this long while engaged, the leader drops to IDLE (limp).
+    watchdog_timeout = float(cfg.get("watchdog_timeout", 1.0))
     # Gravity-comp scale (overrides i2rt's hardcoded 1.3). Optional per-arm.
     gcf = float(cfg.get("gravity_comp_factor", 1.0))
     gcf_left = float(cfg["left"].get("gravity_comp_factor", gcf))
     gcf_right = float(cfg["right"].get("gravity_comp_factor", gcf))
+    # Safe-shutdown pose: on the node's own Ctrl+C the leader arms ease (stiff
+    # PD, gradual) to this pose before motors off, instead of dropping limp. 6
+    # joints per arm (teaching handle has no gripper); shared by both arms. This
+    # is the parked/safe pose, NOT the teleop start pose. See leader.yaml.
+    safe_position = np.asarray(cfg.get("safe_position", [0.0] * 6), dtype=np.float64)
+    shutdown_max_delta = float(cfg.get("shutdown_max_delta", 0.01))
 
     print(f"Initializing left YAM leader arm (gravity_comp_factor={gcf_left})...")
     left = LeaderArm(cfg["left"]["can_channel"], gripper_invert, gcf_left)
@@ -166,42 +323,37 @@ def main():
 
     time.sleep(0.5)
 
-    running = True
+    stop_event = threading.Event()
 
     def shutdown(sig, frame):
-        nonlocal running
-        running = False
+        stop_event.set()
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
     print(f"YAM leader node: state on :{port} at {publish_rate}Hz, "
           f"commands on :{cmd_port}, follower SUB :{robot_state_port}, "
-          f"bilateral_kp={bilateral_kp}")
+          f"leader_feel={leader_feel}, bilateral_kp={bilateral_kp}")
     rate = RateLimiter(frequency=publish_rate, warn=False)
     pbar = tqdm(desc="YAM leader", unit="msg", smoothing=0.05, mininterval=1.0)
     t_debug = time.time()
 
     # --- state machine ---
     mode = "idle"  # idle | reset | coupled | suspended | resume_match
-    target_left = None    # streamed position targets (reset)
-    target_right = None
-    setpoint_left = None   # slewed setpoint during reset / resume_match
-    setpoint_right = None
+    reset_slew = ClampSlew(match_max_delta)         # RESET: track streamed targets
+    resume_slew = SmoothSlew(resume_speed, resume_min_dur)  # clutch RESUME_MATCH
     follower_left = None    # latest follower joint_pos[6]
     follower_right = None
     prev_marker_btn = False
     prev_clutch_btn = False
-
-    def enter_match(to_left, to_right, cur_left, cur_right):
-        nonlocal setpoint_left, setpoint_right, target_left, target_right
-        target_left = np.asarray(to_left, dtype=np.float64)
-        target_right = np.asarray(to_right, dtype=np.float64)
-        setpoint_left = np.asarray(cur_left, dtype=np.float64).copy()
-        setpoint_right = np.asarray(cur_right, dtype=np.float64).copy()
+    # Monotonic marker counter (NOT a one-shot bool): consumers read :5004 with
+    # CONFLATE at ~60Hz, so a single-message bool would be dropped. They diff
+    # this counter instead — a bump that lands between reads is still seen.
+    marker_seq = 0
+    last_cmd_t = None  # monotonic time of the last message from a controller
 
     try:
-        while running:
+        while not stop_event.is_set():
             qL, gL, bL = left.read()
             qR, gR, bR = right.read()
 
@@ -211,22 +363,37 @@ def main():
                     cmd = cmd_pull.recv_json(flags=zmq.NOBLOCK)
                 except zmq.Again:
                     break
+                last_cmd_t = time.monotonic()  # any message proves the controller is alive
                 if "command" in cmd:
-                    if cmd["command"] == "enable_torque":
+                    c = cmd["command"]
+                    if c == "heartbeat":
+                        pass  # liveness ping only
+                    elif c == "enable_torque":
                         mode = "reset"
-                        # default target = current pose until a target streams in
-                        enter_match(qL, qR, qL, qR)
+                        # fresh slew; target = current pose until one streams in
+                        reset_slew.restart(qL, qR)
                         tqdm.write("[leader] enable_torque -> RESET")
-                    elif cmd["command"] == "disable_torque":
+                    elif c == "couple":
                         mode = "coupled"
-                        tqdm.write("[leader] disable_torque -> COUPLED")
+                        tqdm.write("[leader] couple -> COUPLED")
+                    elif c in ("free", "disable_torque"):
+                        # Limp / gravity-comp only (kp=0). NO pull toward the
+                        # follower — used on shutdown so the leader stays put
+                        # instead of snapping to the follower pose.
+                        mode = "idle"
+                        tqdm.write(f"[leader] {c} -> IDLE (free / gravity-comp)")
                 elif "left" in cmd:
                     # Position target (reset waypoints). Only meaningful in RESET.
-                    tl = np.asarray(cmd["left"]["joint_pos"], dtype=np.float64)
-                    tr = np.asarray(cmd["right"]["joint_pos"], dtype=np.float64)
-                    target_left, target_right = tl, tr
-                    if setpoint_left is None:
-                        setpoint_left, setpoint_right = qL.copy(), qR.copy()
+                    reset_slew.set_target(
+                        cmd["left"]["joint_pos"], cmd["right"]["joint_pos"], qL, qR)
+
+            # --- watchdog: controller went silent (hard crash / killed) -> limp ---
+            if (last_cmd_t is not None and mode != "idle"
+                    and time.monotonic() - last_cmd_t > watchdog_timeout):
+                tqdm.write(f"[leader] WATCHDOG: no controller heartbeat for "
+                           f">{watchdog_timeout:.1f}s -> IDLE (free)")
+                mode = "idle"
+                last_cmd_t = None  # disarm until a controller reconnects
 
             # --- latest follower state (bilateral / resume target) ---
             try:
@@ -243,6 +410,9 @@ def main():
             clutch_edge = clutch_btn and not prev_clutch_btn
             prev_marker_btn = marker_btn
             prev_clutch_btn = clutch_btn
+            if marker:
+                marker_seq += 1
+                tqdm.write(f"[leader] MARKER #{marker_seq}")
 
             if clutch_edge:
                 if mode == "coupled":
@@ -251,8 +421,10 @@ def main():
                 elif mode == "suspended":
                     if follower_left is not None:
                         mode = "resume_match"
-                        enter_match(follower_left, follower_right, qL, qR)
-                        tqdm.write("[leader] CLUTCH -> RESUME_MATCH (slewing to follower)")
+                        dur = resume_slew.start(
+                            qL, qR, follower_left, follower_right)
+                        tqdm.write(f"[leader] CLUTCH -> RESUME_MATCH "
+                                   f"(easing to follower over {dur:.2f}s)")
                     else:
                         tqdm.write("[leader] CLUTCH ignored: no follower state yet")
 
@@ -260,24 +432,38 @@ def main():
             if mode in ("idle", "suspended"):
                 left.free(qL)
                 right.free(qR)
-            elif mode in ("reset", "resume_match"):
-                setpoint_left = _slew(setpoint_left, target_left, match_max_delta)
-                setpoint_right = _slew(setpoint_right, target_right, match_max_delta)
-                left.stiff_to(setpoint_left)
-                right.stiff_to(setpoint_right)
-                if mode == "resume_match":
-                    err = max(float(np.max(np.abs(qL - target_left))),
-                              float(np.max(np.abs(qR - target_right))))
-                    if err < match_tol:
-                        mode = "coupled"
-                        tqdm.write("[leader] RESUME_MATCH done -> COUPLED")
+            elif mode == "reset":
+                # Track the consumer's externally-streamed waypoints; the slew
+                # clamp just smooths over any gaps between them.
+                sp_l, sp_r = reset_slew.step()
+                left.stiff_to(sp_l)
+                right.stiff_to(sp_r)
+            elif mode == "resume_match":
+                # Gentle smoothstep ease back to the follower (no external
+                # streaming here, so this profile alone shapes the motion).
+                sp_l, sp_r, done = resume_slew.step()
+                left.stiff_to(sp_l)
+                right.stiff_to(sp_r)
+                if done:
+                    mode = "coupled"
+                    tqdm.write("[leader] RESUME_MATCH done -> COUPLED")
             elif mode == "coupled":
-                if follower_left is not None and bilateral_kp > 0.0:
+                if leader_feel == "damped":
+                    # Raiden feel: stiff PD (nominal kp/kd) chasing the leader's
+                    # OWN measured pose -> viscous, self-centering backdrive. No
+                    # follower coupling, so no contact-force feedback (and no
+                    # follower state needed).
+                    left.stiff_to(qL)
+                    right.stiff_to(qR)
+                elif (leader_feel == "bilateral" and follower_left is not None
+                        and bilateral_kp > 0.0):
+                    # Soft bilateral PD pulling the leader toward the follower's
+                    # measured pose, so the operator feels contact forces.
                     left.coupled_to(follower_left, bilateral_kp)
                     right.coupled_to(follower_right, bilateral_kp)
                 else:
-                    # bilateral_kp == 0 (pure passive) or no follower yet:
-                    # behave like a free leader.
+                    # leader_feel == "free", or bilateral with kp==0 / no
+                    # follower yet: pure passive gravity-comp backdrive.
                     left.free(qL)
                     right.free(qR)
 
@@ -289,7 +475,7 @@ def main():
                 "torque_enabled": (mode == "reset"),
                 "mode": mode,
                 "buttons": {
-                    "marker": bool(marker),
+                    "marker_seq": marker_seq,  # monotonic; consumers diff it
                     "clutch": mode == "suspended",
                     "left": [bool(bL[0]), bool(bL[1])],
                     "right": [bool(bR[0]), bool(bR[1])],
@@ -316,6 +502,14 @@ def main():
         cmd_pull.close()
         foll_sub.close()
         ctx.term()
+        # Ease the leaders to the safe/parked pose before motors off (mirrors
+        # robot_node). Guarded so the motors always power down even if the move
+        # fails — never leave the arms energized-but-stuck.
+        try:
+            safe_return_to_pose(left, right, safe_position, shutdown_max_delta)
+        except Exception as e:
+            print(f"  Safe return failed ({type(e).__name__}: {e}); "
+                  f"powering motors off anyway.", file=sys.stderr)
         left.close()
         right.close()
         print("YAM leader node shut down.")

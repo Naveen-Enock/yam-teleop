@@ -1,30 +1,52 @@
 # YAM leader-arm configuration (teaching handles)
 # Two YAM arms with yam_teaching_handle grippers, backdriven in gravity-comp.
-# Per-arm `gravity_comp_factor:` overrides the node-level value below. These
-# cheap leader arms vary unit-to-unit, so they're tuned independently.
+# Per-arm `gravity_comp_factor:` may be added under left/right to override the
+# node-level value below — useful if a worn/beat-up arm needs different tuning.
 left:
   can_channel: can_leader_l
-  gravity_comp_factor: 1.0   # neutral at 1.0
 right:
   can_channel: can_leader_r
-  gravity_comp_factor: 1.1   # joint 4 sags at 1.0; needs a bit more
 
-# Gravity-compensation scale for the LEADER arms. i2rt's get_yam_robot hardcodes
-# 1.3 (tuned for position-controlled followers, where 30% over-comp is masked by
-# the PD and fights friction). A leader backdrives with kp=0, so 1.3 makes it
-# float UPWARD ("shoots up"). 1.0 = neutral. Lower toward ~0.9 if it still drifts
-# up; raise if it sags. This node-level value is the fallback/default; the
-# per-arm overrides above take precedence.
-gravity_comp_factor: 1.0
+# Gravity-compensation scale for the LEADER arms (applied as torque + g*factor;
+# i2rt's get_yam_robot hardcodes 1.3 internally — we re-apply it here so it's
+# tunable). 1.3 is the value tuned for healthy YAM arms; on a brand-new arm it
+# gives a clean backdrive. A worn/beat-up arm may float UP at 1.3 — lower it
+# (~1.0) for that arm via a per-arm override under left/right.
+gravity_comp_factor: 1.3
+
+# Safety watchdog: the controlling script (collect_yam / teleop_min) sends a
+# heartbeat while alive. If the leader hears nothing for this long while engaged
+# (e.g. the script was hard-killed), it drops to IDLE / limp gravity-comp.
+watchdog_timeout: 1.0
+
+# Safe shutdown: on the leader node's own Ctrl+C / SIGTERM, both arms ease to
+# this pose (stiff PD, gradual) before the motors switch off — so they settle
+# into a folded/parked pose instead of dropping limp. 6 joints per arm (the
+# teaching handle has no gripper), shared by both arms. This is the parked/SAFE
+# pose, distinct from the teleop START pose (the follower's home). All-zeros
+# folds the arm down at the base (mirrors robot.yaml's follower safe pose).
+safe_position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+shutdown_max_delta: 0.01   # max joint move per step (rad); smaller = slower/safer
 
 publish_rate_hz: 200
 zmq_port: 5004          # state PUB (gello-compatible shape)
 zmq_cmd_port: 5006      # commands PULL (position targets + torque control)
 robot_state_port: 5002  # follower state stream (robot_node PUB) for bilateral
 
-# Bilateral force feedback gain: scales the arm's nominal joint kp
-# ([80,80,80,40,10,10]) with kd=0. i2rt recommends 0.1-0.2; 0 = pure passive
-# backdrive (old gello feel). Start conservative for first hardware bring-up.
+# Leader feel during active teleop (the COUPLED state):
+#   bilateral - soft PD toward the FOLLOWER pose; the operator feels contact
+#               forces (gain = bilateral_kp below). [default; current behavior]
+#   damped    - stiff PD (full nominal kp/kd) toward the leader's OWN pose: a
+#               viscous, self-centering backdrive ("raiden feel"). No force
+#               feedback. Pair with gravity_comp_factor ~1.1 above for a lighter
+#               backdrive (the stiff PD masks the over-compensation either way).
+#   free      - zero stiffness, pure gravity-comp backdrive (old gello feel).
+leader_feel: bilateral
+
+# Bilateral force feedback gain (used when leader_feel: bilateral): scales the
+# arm's nominal joint kp ([80,80,80,40,10,10]) with kd=0. i2rt recommends
+# 0.1-0.2; 0 = pure passive backdrive (old gello feel). Start conservative for
+# first hardware bring-up.
 bilateral_kp: 0.1
 
 # Teaching-handle trigger -> gripper command. i2rt normalizes the trigger to
@@ -32,7 +54,13 @@ bilateral_kp: 0.1
 # convention collect_data expects. Verify the sign on hardware.
 gripper_invert: true
 
-# Match/reset slew (RESET drive + clutch RESUME_MATCH): how fast the leader
-# drives itself toward the target pose, and the tolerance to declare a match.
+# RESET drive slew: per-tick clamp while the leader tracks the consumer's
+# externally-streamed reset waypoints (start-of-episode match).
 match_max_delta: 0.01   # rad per control tick (~2 rad/s at 200Hz)
-match_tol: 0.05         # rad
+
+# Clutch RESUME_MATCH: gentle eased return to the follower pose after a clutch-
+# out. resume_speed sets the slew rate (rad/s) — keep it near the start-reset
+# feel (~0.4); a smoothstep profile ramps velocity from/to zero so there's no
+# jerk. resume_min_duration floors the time so tiny moves still ease in smoothly.
+resume_speed: 0.4          # rad/s
+resume_min_duration: 0.5   # s

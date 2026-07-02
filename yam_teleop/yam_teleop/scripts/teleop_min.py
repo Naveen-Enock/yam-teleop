@@ -10,13 +10,15 @@ Run three terminals on the robot host:
     uv run python -m yam_teleop.scripts.teleop_min
 
 Flow:
-  1. Hold the follower at its current measured pose (so it stops floating).
-  2. enable_torque -> drive the LEADER to the follower pose (the leader moves,
-     the follower stays put), then disable_torque -> COUPLED.
-  3. Live: stream leader joints + gripper to the follower at --rate Hz.
-     Clutch (teaching-handle button 2) suspends/resumes via the leader node;
-     while SUSPENDED we stop commanding so the follower holds. Marker presses
-     (button 1) are just printed here (Stage 3 wires them into recording).
+  1. Follower -> start pose (raw ZMQ; collect_yam uses env.reset()).
+  2. enable_torque -> drive the LEADER through the waypoint to the follower
+     pose; squeeze both triggers -> couple -> COUPLED.
+  3. Soft handoff: ease the follower from its reset pose onto the live leader
+     stream over ~0.5s so engaging can't lurch it.
+  4. Live: stream leader joints + gripper to the follower at --rate Hz.
+     Clutch (handle button 1) suspends/resumes via the leader node; while
+     SUSPENDED/RESUME_MATCH we stop commanding so the follower holds. Marker
+     presses (button 0) are just printed here (collect_yam records them).
 
 This talks to the SAME ZMQ contract collect_data uses, so a clean run here also
 exercises the reset handshake the real pipeline depends on.
@@ -24,10 +26,41 @@ exercises the reset handshake the real pipeline depends on.
 
 import argparse
 import signal
+import threading
 import time
 
-import numpy as np
+import yaml
 import zmq
+
+from yam_teleop.scripts.reset_helpers import reset_follower_raw, reset_leader
+
+
+def start_leader_heartbeat(port: int, hz: float = 10.0):
+    """Background daemon pinging the leader node so it knows we're alive.
+
+    If this process dies hard, the thread dies with it and the leader's watchdog
+    drops it to IDLE. Own thread + ZMQ context (sockets aren't thread-safe).
+    """
+    stop = threading.Event()
+
+    def loop():
+        ctx = zmq.Context()
+        sock = ctx.socket(zmq.PUSH)
+        sock.setsockopt(zmq.LINGER, 0)
+        sock.connect(f"tcp://127.0.0.1:{port}")
+        period = 1.0 / hz
+        while not stop.is_set():
+            try:
+                sock.send_json({"command": "heartbeat"})
+            except Exception:
+                break
+            stop.wait(period)
+        sock.close()
+        ctx.term()
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    return stop, t
 
 
 def _latest(sub, timeout_s=0.0):
@@ -57,6 +90,11 @@ def _follower_cmd(leader_msg):
     }
 
 
+def _blend(a, b, s):
+    """Element-wise (1-s)*a + s*b for two equal-length numeric lists."""
+    return [(1.0 - s) * float(x) + s * float(y) for x, y in zip(a, b)]
+
+
 def main():
     p = argparse.ArgumentParser(description="Stage-1 minimal leader->follower teleop")
     p.add_argument("--leader-state-port", type=int, default=5004)
@@ -64,12 +102,12 @@ def main():
     p.add_argument("--robot-state-port", type=int, default=5002)
     p.add_argument("--robot-cmd-port", type=int, default=5003)
     p.add_argument("--rate", type=float, default=60.0, help="teleop command Hz")
-    p.add_argument("--match-tol", type=float, default=0.08,
-                   help="rad; leader-vs-follower match tolerance for handshake")
-    p.add_argument("--match-timeout", type=float, default=15.0)
+    p.add_argument("--env-config", default="yam_teleop/configs/env.yaml",
+                   help="env.yaml — read for home_position + leader_reset_waypoint")
     p.add_argument("--no-handshake", action="store_true",
-                   help="skip enable/disable_torque; assume leader already coupled")
+                   help="skip the reset; assume leader already coupled")
     args = p.parse_args()
+    period = 1.0 / args.rate  # teleop command period (used in handoff + live loop)
 
     ctx = zmq.Context()
     leader_sub = ctx.socket(zmq.SUB)
@@ -90,10 +128,13 @@ def main():
     robot_cmd.setsockopt(zmq.SNDHWM, 1)
     robot_cmd.bind(f"tcp://127.0.0.1:{args.robot_cmd_port}")
 
-    running = [True]
+    # Liveness heartbeat -> leader watchdog frees the arm if we die hard.
+    hb_stop, hb_thread = start_leader_heartbeat(args.leader_cmd_port)
+
+    stop = threading.Event()
 
     def shutdown(sig, frame):
-        running[0] = False
+        stop.set()
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
@@ -107,61 +148,80 @@ def main():
     print(">> Both streams alive.")
 
     if not args.no_handshake:
-        # 1. Hold the follower where it is so it stops floating during the match.
-        hold = _follower_cmd(leader_msg)
-        hold["left"]["joint_pos"] = foll_msg["left"]["joint_pos"]
-        hold["right"]["joint_pos"] = foll_msg["right"]["joint_pos"]
-        hold["left"]["gripper_pos"] = foll_msg["left"]["gripper_pos"]
-        hold["right"]["gripper_pos"] = foll_msg["right"]["gripper_pos"]
+        env_cfg = yaml.safe_load(open(args.env_config))
+        home = env_cfg["home_position"]
+        waypoint = env_cfg.get("leader_reset_waypoint")
 
-        input("\n*** SAFETY: clear the workspace. The LEADER arms will move to "
-              "match the followers.\n    Press Enter to begin... ")
+        input("\n*** SAFETY: clear the workspace. Followers move to the start "
+              "pose, then the LEADERS move (waypoint -> match).\n"
+              "    Press Enter to begin... ")
 
-        # 2. Drive the leader to the follower pose.
-        leader_cmd.send_json({"command": "enable_torque"})
-        print("Matching leader -> follower...")
-        deadline = time.monotonic() + args.match_timeout
-        rate = 1.0 / 50.0
-        while running[0] and time.monotonic() < deadline:
-            foll_msg = _latest(foll_sub) or foll_msg
-            robot_cmd.send_json(hold)  # keep holding the follower
-            leader_cmd.send_json({
-                "left": {"joint_pos": foll_msg["left"]["joint_pos"]},
-                "right": {"joint_pos": foll_msg["right"]["joint_pos"]},
-            })
-            leader_msg = _latest(leader_sub) or leader_msg
-            errL = np.max(np.abs(np.array(leader_msg["left"]["joint_pos"])
-                                 - np.array(foll_msg["left"]["joint_pos"])))
-            errR = np.max(np.abs(np.array(leader_msg["right"]["joint_pos"])
-                                 - np.array(foll_msg["right"]["joint_pos"])))
-            if max(errL, errR) < args.match_tol:
+        # Same start sequence as collect_yam (but follower homed over raw ZMQ
+        # since teleop_min has no env/broker).
+        # 1. Follower -> start pose.
+        print("Resetting follower to start pose...")
+        reset_follower_raw(robot_cmd, lambda: _latest(foll_sub), home)
+
+        # 2. Leader -> waypoint -> match follower; squeeze both triggers; couple.
+        print("Resetting leader (waypoint -> match; squeeze both triggers)...")
+        reset_leader(
+            leader_cmd, lambda: _latest(leader_sub),
+            home_left=home[:6], home_right=home[7:13],
+            waypoint_left=waypoint, waypoint_right=waypoint,
+            quit_check=lambda: stop.is_set(),
+        )
+        leader_msg = _latest(leader_sub) or leader_msg
+
+        # 3. Soft handoff. Squeezing the triggers to start displaces the leader
+        # off the matched pose; commanding the follower straight to that pose in
+        # one 60Hz step makes it lurch (the noise heard on bring-up). Ramp a
+        # blend 0->1 over HANDOFF_S so the follower eases from its reset pose
+        # onto the live leader stream. (collect_yam avoids this via its broker
+        # warm-up gap before the first env.step.)
+        foll_msg = _latest(foll_sub) or foll_msg
+        f_l, f_r = foll_msg["left"]["joint_pos"], foll_msg["right"]["joint_pos"]
+        f_lg = float(foll_msg["left"]["gripper_pos"])
+        f_rg = float(foll_msg["right"]["gripper_pos"])
+        handoff_s, t_h = 0.5, time.monotonic()
+        while not stop.is_set():
+            a = (time.monotonic() - t_h) / handoff_s
+            if a >= 1.0:
                 break
-            time.sleep(rate)
-        print(f">> Match done (errL={errL:.3f}, errR={errR:.3f} rad).")
-
-        # 3. Engage teleop.
-        leader_cmd.send_json({"command": "disable_torque"})
-        print(">> COUPLED. Live teleop started. Ctrl+C to stop.\n")
+            s = a * a * (3.0 - 2.0 * a)  # smoothstep ease-in/out
+            leader_msg = _latest(leader_sub) or leader_msg
+            l, r = leader_msg["left"], leader_msg["right"]
+            robot_cmd.send_json({
+                "left": {"joint_pos": _blend(f_l, l["joint_pos"], s),
+                         "gripper_pos": (1.0 - s) * f_lg + s * float(l["gripper_pos"])},
+                "right": {"joint_pos": _blend(f_r, r["joint_pos"], s),
+                          "gripper_pos": (1.0 - s) * f_rg + s * float(r["gripper_pos"])},
+            })
+            time.sleep(period)
+        print(">> COUPLED + handed off. Live teleop started. Ctrl+C to stop.\n")
 
     # Live loop.
-    period = 1.0 / args.rate
-    suspended_prev = False
+    paused_prev = False
+    last_marker_seq = leader_msg.get("buttons", {}).get("marker_seq", 0)
     last_print = time.time()
-    while running[0]:
+    while not stop.is_set():
         t0 = time.time()
         leader_msg = _latest(leader_sub) or leader_msg
         mode = leader_msg.get("mode", "coupled")
         buttons = leader_msg.get("buttons", {})
 
-        if buttons.get("marker"):
-            print(f"[marker] sub-task boundary @ {time.strftime('%H:%M:%S')}")
+        marker_seq = buttons.get("marker_seq", 0)
+        if marker_seq != last_marker_seq:
+            print(f"[marker] #{marker_seq} sub-task boundary @ {time.strftime('%H:%M:%S')}")
+            last_marker_seq = marker_seq
 
-        suspended = (mode == "suspended")
-        if suspended != suspended_prev:
-            print(f">> {'SUSPENDED (follower holding)' if suspended else 'RESUMED'}")
-            suspended_prev = suspended
+        # Pause through both "suspended" and "resume_match" so the follower
+        # holds still until the leader has fully re-matched (mode == "coupled").
+        paused = mode in ("suspended", "resume_match")
+        if paused != paused_prev:
+            print(f">> {'PAUSED (follower holding)' if paused else 'RESUMED'}")
+            paused_prev = paused
 
-        if not suspended:
+        if not paused:
             robot_cmd.send_json(_follower_cmd(leader_msg))
 
         if time.time() - last_print >= 1.0:
@@ -175,6 +235,15 @@ def main():
             time.sleep(dt)
 
     print("\nteleop_min stopped. (robot_node handles its own safe return on Ctrl+C.)")
+    hb_stop.set()
+    # Leave the leader limp (gravity-comp), NOT coupled — otherwise it would
+    # keep pulling toward the follower after we exit.
+    try:
+        leader_cmd.send_json({"command": "free"})
+        time.sleep(0.1)
+    except Exception:
+        pass
+    hb_thread.join(timeout=1.0)
     leader_sub.close()
     foll_sub.close()
     leader_cmd.close()
