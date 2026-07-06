@@ -32,3 +32,9 @@ shutdown_max_delta: 0.01
 
 # Gripper force limit (Newtons). Lower = safer for rigid objects.
 gripper_max_force: 10.0
+
+# Gripper command slew limit (stroke-fraction/s; 0 disables). Caps how fast the
+# commanded gripper position may change so a fast squeeze can't slam shut and
+# spike the torque before the force limiter engages. 1.5 => full close in ~0.67s.
+# Lower = gentler but more sluggish. Tune against the --plot-gripper torque panel.
+gripper_max_speed: 1.5
