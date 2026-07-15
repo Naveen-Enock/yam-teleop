@@ -70,13 +70,15 @@ def safe_return_to_home(left_arm: YamFollower, right_arm: YamFollower,
         print("  Shutdown interrupted — stopping where we are.")
 
 
-def make_yam_arm(arm_cfg: dict, gripper_max_force: float) -> YamFollower:
+def make_yam_arm(arm_cfg: dict, gripper_max_force: float,
+                 gripper_torque_cap: float) -> YamFollower:
     """Create a follower YAM arm from config."""
     return YamFollower(
         channel=arm_cfg["can_channel"],
         gripper_type=arm_cfg["gripper_type"],
         zero_gravity_mode=arm_cfg["zero_gravity_mode"],
         limit_gripper_force=gripper_max_force,
+        gripper_torque_cap=gripper_torque_cap,
     )
 
 
@@ -104,12 +106,14 @@ def main():
     # can't slam the gripper shut and spike the torque before the force limiter
     # engages. Tune with the --plot-gripper torque panel.
     gripper_max_speed = cfg.get("gripper_max_speed", 0.0)
+    # Hard cap (Nm) on gripper motor torque (0 disables); see robot.yaml.
+    gripper_torque_cap = cfg.get("gripper_torque_cap", 0.0)
 
     # Initialize both YAM arms
     print("Initializing left YAM arm...")
-    left_arm = make_yam_arm(cfg["left"], gripper_max_force)
+    left_arm = make_yam_arm(cfg["left"], gripper_max_force, gripper_torque_cap)
     print("Initializing right YAM arm...")
-    right_arm = make_yam_arm(cfg["right"], gripper_max_force)
+    right_arm = make_yam_arm(cfg["right"], gripper_max_force, gripper_torque_cap)
 
     # ZMQ sockets
     ctx = zmq.Context()
@@ -150,6 +154,9 @@ def main():
     }
     if gripper_max_speed > 0:
         print(f"Gripper slew limit: {gripper_max_speed:.2f} stroke-fraction/s")
+    if gripper_torque_cap > 0:
+        cap_n = gripper_torque_cap * _GRIPPER_MOTOR_STROKE_RAD / _GRIPPER_STROKE_M
+        print(f"Gripper torque cap: {gripper_torque_cap:.2f} Nm (~{cap_n:.0f} N gross)")
 
     def cmd_receiver():
         def slew_gripper(arm: str, raw_pos: float, dt: float) -> float:

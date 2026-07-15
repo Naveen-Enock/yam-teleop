@@ -31,6 +31,7 @@ class YamFollower:
         gripper_type: Union[str, object] = "linear_4310",
         zero_gravity_mode: bool = True,
         limit_gripper_force: float = 50.0,
+        gripper_torque_cap: float = -1.0,
     ):
         # Imported lazily so importing this module never requires i2rt/CAN
         # hardware (e.g. on the dev laptop).
@@ -45,6 +46,7 @@ class YamFollower:
             gripper_type=gripper_type,
             zero_gravity_mode=zero_gravity_mode,
             limit_gripper_force=limit_gripper_force,
+            gripper_torque_cap=gripper_torque_cap,
         )
         self.channel = channel
         self._joint_state = np.zeros(7, dtype=np.float32)

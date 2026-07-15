@@ -34,7 +34,13 @@ shutdown_max_delta: 0.01
 gripper_max_force: 10.0
 
 # Gripper command slew limit (stroke-fraction/s; 0 disables). Caps how fast the
-# commanded gripper position may change so a fast squeeze can't slam shut and
-# spike the torque before the force limiter engages. 1.5 => full close in ~0.67s.
-# Lower = gentler but more sluggish. Tune against the --plot-gripper torque panel.
-gripper_max_speed: 1.5
+# commanded gripper position may change. Empirical comfort/responsiveness knob,
+# not a contact-spike guarantee. 1.0 => full close in ~1s. Lower = gentler but
+# more sluggish.
+gripper_max_speed: 1.0
+
+# Hard cap (Nm) on gripper motor torque (0 disables). While the gripper is stalled,
+# i2rt clamps the commanded position error so torque = kp*(cmd-actual) stays under
+# this. 1.5 Nm ~= 103 N gross. Must stay above the steady hold torque (~0.45 Nm at
+# gripper_max_force 10) or it fights the hold.
+gripper_torque_cap: 1.5
