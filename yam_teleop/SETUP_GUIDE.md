@@ -3,6 +3,10 @@
 How to set up and run the bimanual YAM leader-follower teleop + data-collection
 system on a fresh robot host.
 
+This guide covers the default rig with **YAM teaching-handle leaders**. For
+**GELLO** (Dynamixel) leaders, the followers, cameras, broker and recording are
+the same — see [§8](#8-gello-leaders) for what differs.
+
 ---
 
 ## 1. Hardware
@@ -221,3 +225,35 @@ converters/labelers keep working — it's just a legacy label now.
 | Leader/follower jump at teleop start | they weren't matched — let the reset "match" finish before squeezing |
 | Leader suddenly goes limp mid-use | watchdog fired — the controlling script stopped/lost its heartbeat; relaunch it |
 | A node exits with `i2rt control loop stopped (motor comms lost?)` | i2rt fails fast on lost CAN comms — check that arm's power / CAN cable / `ip -br link`, then restart the node |
+
+---
+
+## 8. GELLO leaders
+
+GELLO leaders are a drop-in alternative to the YAM leaders: `gello_node`
+publishes the same state stream and accepts the same commands as
+`yam_leader_node`. GELLO is passive (unilateral) — no force feedback, clutch,
+or handle buttons.
+
+1. **Install the driver:** `uv sync --extra gello` (adds `dynamixel-sdk`; the
+   GELLO driver itself is vendored in `yam_teleop/hardware/gello/`).
+2. **`configs/gello.yaml`:** set each arm's `port` to its U2D2 adapter
+   (`ls /dev/serial/by-id/`), plus `joint_offsets` / `joint_signs` /
+   `gripper_config` from your GELLO calibration.
+3. **`configs/robot_gello.yaml`:** the GELLO rig's follower config
+   (`crank_4310` grippers on `can_left` / `can_right`). If your GELLO rig uses
+   the same followers as the YAM rig, pass `--robot-config
+   yam_teleop/configs/robot.yaml` instead.
+4. **Launch:** `./launch_nodes.sh --leader gello` — same five panes, with
+   `gello_node` as step 3 and `collect_data` as step 5.
+
+**Collection cycle (`collect_data`):** followers reset → GELLO arms are driven
+to the start pose (grippers limp) → **squeeze both GELLO grippers** to start →
+teleop + recording → **right pedal = SUCCESS, left pedal = FAILURE**, audio
+pedal = sub-task marker, `q` quits. `collect_data` also records per-episode
+audio narration and aborts at startup if the microphone is silent (pass
+`--skip-mic-check` to bypass).
+
+`collect_yam` and `teleop_min` also work with GELLO leaders (`couple` makes the
+GELLO limp for teleop; button-based markers and clutch simply never fire).
+

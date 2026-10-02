@@ -4,6 +4,7 @@
 # no fork, no submodule. To upgrade, bump the tag below and re-run `uv sync`.
 #   uv sync                    -> i2rt + yam_teleop (editable)
 #   uv sync --extra transcribe -> + faster-whisper transcription
+#   uv sync --extra gello      -> + GELLO leader driver (gello_node)
 [project]
 name = "yam-teleop-dev"
 version = "0"
@@ -15,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 transcribe = ["yam_teleop[transcribe]"]
+gello = ["yam_teleop[gello]"]
 
 [tool.uv]
 package = false

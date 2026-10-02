@@ -7,9 +7,17 @@
 # The step number is shown in each pane's border.
 #
 # Usage:
-#   ./launch_nodes.sh                # real USB cameras (default)
-#   ./launch_nodes.sh --camera-mock  # synthetic frames (no USB cameras)
-#   ./launch_nodes.sh --no-attach    # build the session but don't attach
+#   ./launch_nodes.sh                  # YAM leaders, real USB cameras (default)
+#   ./launch_nodes.sh --leader gello   # GELLO (Dynamixel) leaders instead
+#   ./launch_nodes.sh --camera-mock    # synthetic frames (no USB cameras)
+#   ./launch_nodes.sh --robot-config <yaml>  # override the follower config
+#   ./launch_nodes.sh --no-attach      # build the session but don't attach
+#
+# --leader picks the leader node, its config, the follower config, and the
+# collection script:
+#   yam   -> yam_leader_node + leader.yaml, robot.yaml,       collect_yam
+#   gello -> gello_node      + gello.yaml,  robot_gello.yaml, collect_data
+#            (needs `uv sync --extra gello`)
 #
 # Kill everything:  tmux kill-session -t teleop
 
@@ -20,28 +28,48 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"   # repo root — uv + the relative paths below resolve here
 
 usage() {
-    sed -n '2,15p' "$0" | sed 's/^#\{1,2\} \{0,1\}//'
+    sed -n '2,24p' "$0" | sed 's/^#\{1,2\} \{0,1\}//'
 }
 
-# --- options: real cameras by default, mock via --camera-mock ---
+# --- options ---
 CAMERA_CONFIG="yam_teleop/configs/camera.yaml"
+LEADER="yam"
+ROBOT_CONFIG=""
 ATTACH=1
-for arg in "$@"; do
-    case "$arg" in
-        --camera-mock) CAMERA_CONFIG="yam_teleop/configs/camera_mock.yaml" ;;
-        --no-attach)   ATTACH=0 ;;
-        -h|--help)     usage; exit 0 ;;
-        *) echo "Unknown option: $arg (try --help)" >&2; exit 1 ;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --camera-mock)  CAMERA_CONFIG="yam_teleop/configs/camera_mock.yaml" ;;
+        --leader)       LEADER="${2:-}"; shift ;;
+        --robot-config) ROBOT_CONFIG="${2:-}"; shift ;;
+        --no-attach)    ATTACH=0 ;;
+        -h|--help)      usage; exit 0 ;;
+        *) echo "Unknown option: $1 (try --help)" >&2; exit 1 ;;
     esac
+    shift
 done
+
+case "$LEADER" in
+    yam)
+        RUN="uv run"
+        DEFAULT_ROBOT_CONFIG="yam_teleop/configs/robot.yaml"
+        LEADER_STEP="[3] leaders: YAM teaching handles|${RUN} python -m yam_teleop.nodes.yam_leader_node --config yam_teleop/configs/leader.yaml"
+        COLLECT="yam_teleop.scripts.collect_yam" ;;
+    gello)
+        RUN="uv run --extra gello"
+        DEFAULT_ROBOT_CONFIG="yam_teleop/configs/robot_gello.yaml"
+        LEADER_STEP="[3] leaders: GELLO|${RUN} python -m yam_teleop.nodes.gello_node --config yam_teleop/configs/gello.yaml"
+        COLLECT="yam_teleop.scripts.collect_data" ;;
+    *) echo "Unknown --leader '${LEADER}' (expected yam or gello)" >&2; exit 1 ;;
+esac
+ROBOT_CONFIG="${ROBOT_CONFIG:-$DEFAULT_ROBOT_CONFIG}"
 
 # "pane-border title | command to pre-type" (| never appears in a command)
 STEPS=(
-  "[1] cameras: ${CAMERA_CONFIG}|uv run python -m yam_teleop.nodes.camera_node --config ${CAMERA_CONFIG}"
-  "[2] followers  (grippers auto-calibrate on startup -- keep them CLEAR)|uv run python -m yam_teleop.nodes.robot_node --config yam_teleop/configs/robot.yaml"
-  "[3] leaders (teaching handles)|uv run python -m yam_teleop.nodes.yam_leader_node --config yam_teleop/configs/leader.yaml"
-  "[4] sync broker|uv run python -m yam_teleop.nodes.sync_broker --config yam_teleop/configs/broker.yaml"
-  "[5] collect  (start AFTER 1-4 are up; edit <task_name>)|uv run python -m yam_teleop.scripts.collect_yam --env-config yam_teleop/configs/env.yaml --output-dir data/<task_name>"
+  "[1] cameras: ${CAMERA_CONFIG}|${RUN} python -m yam_teleop.nodes.camera_node --config ${CAMERA_CONFIG}"
+  "[2] followers: ${ROBOT_CONFIG}  (grippers auto-calibrate on startup -- keep them CLEAR)|${RUN} python -m yam_teleop.nodes.robot_node --config ${ROBOT_CONFIG}"
+  "${LEADER_STEP}"
+  "[4] sync broker|${RUN} python -m yam_teleop.nodes.sync_broker --config yam_teleop/configs/broker.yaml"
+  "[5] collect  (start AFTER 1-4 are up; edit <task_name>)|${RUN} python -m ${COLLECT} --env-config yam_teleop/configs/env.yaml --output-dir data/<task_name>"
 )
 
 # --- fresh session, sized to the current terminal ---

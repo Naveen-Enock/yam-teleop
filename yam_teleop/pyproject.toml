@@ -26,6 +26,10 @@ dependencies = [
 transcribe = [
     "faster-whisper",
 ]
+# GELLO (Dynamixel) leader arms — gello_node. Not needed on YAM-leader rigs.
+gello = [
+    "dynamixel-sdk",       # vendored driver in yam_teleop/hardware/gello/
+]
 
 [tool.setuptools.packages.find]
 include = ["yam_teleop*"]

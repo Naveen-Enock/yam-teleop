@@ -1,0 +1,40 @@
+# YAM follower configuration for the GELLO-leader rig (launch_nodes.sh --leader gello).
+#
+# Restored from the GELLO-era main (tag gello-legacy): crank_4310 grippers on
+# can_left/can_right. If your GELLO rig shares the YAM rig's followers, use
+# robot.yaml instead (launch_nodes.sh --leader gello --robot-config ...).
+# See robot.yaml for the full set of optional keys (sim, kp/kd,
+# gravity_comp_factor, gripper_max_speed, gripper_torque_cap).
+#
+# NOTE: since the i2rt upgrade (v1.3.6) crank_4310 grippers AUTO-CALIBRATE on
+# startup like linear_4310 — robot_node opens/closes each gripper during init.
+# Keep the grippers UNOBSTRUCTED at launch.
+left:
+  can_channel: can_left
+  gripper_type: crank_4310
+  zero_gravity_mode: true
+
+right:
+  can_channel: can_right
+  gripper_type: crank_4310
+  zero_gravity_mode: true
+
+sim: false
+
+publish_rate_hz: 200
+zmq_state_port: 5002
+zmq_cmd_port: 5003
+
+# Gripper open limit in command space (1.0 = fully open, hardware can't reach it)
+gripper_max_open: 0.85
+
+# Safe shutdown: arms return to this position before motors off
+# [joint1..6, gripper] per arm — gripper value clamped by gripper_max_open
+home_position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.85]
+
+# Max joint movement per step during shutdown reset (radians)
+shutdown_max_delta: 0.01
+
+# Gripper force limit when clogged (Newtons). Lower = safer for rigid objects.
+# (i2rt's get_yam_robot hardcodes 50 N; robot_node replaces it with this.)
+gripper_max_force: 30.0

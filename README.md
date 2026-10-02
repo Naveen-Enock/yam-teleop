@@ -3,44 +3,50 @@
 A decoupled, bimanual **leader–follower teleoperation and data-collection**
 system for [I2RT YAM](https://i2rt.com/) arms.
 
-Two 6-DOF YAM follower arms are driven by leader arms (GELLO Dynamixel leaders
-on `main`; YAM teaching-handle leaders on the `feat/yam-leader-follower`
-branch), with USB cameras and foot pedals, so an operator can teleoperate the
-robot and record demonstrations for imitation learning.
+Two 6-DOF YAM follower arms are driven by a pair of leader arms, with USB
+cameras and foot pedals, so an operator can teleoperate the robot and record
+demonstrations for imitation learning.
 
 The system is built as independent ZMQ microservice nodes (camera / robot /
 leader / sync-broker) joined behind a single `gymnasium` environment, so the
 exact same interface is used for both data collection and policy inference.
 
+## Leader hardware
+
+Both leader types publish the same state stream and accept the same commands,
+so everything downstream (followers, broker, env, recording) is shared. Pick
+one at launch:
+
+| Leader | Node | Launch | Collection script |
+|--------|------|--------|-------------------|
+| **YAM teaching-handle arms** (default) — gravity-comp backdrive, bilateral force feedback, clutch + marker buttons | `yam_leader_node` | `./launch_nodes.sh` | `collect_yam` |
+| **GELLO** (Dynamixel) arms — passive leaders, audio-pedal markers | `gello_node` | `./launch_nodes.sh --leader gello` | `collect_data` |
+
+The GELLO driver is an optional extra: `uv sync --extra gello`.
+
 ## Layout
 
 ```
 yam_teleop/            the teleop package (nodes, scripts, configs)
-third_party/
-  gello_software/      vendored GELLO driver fork (submodule)
-  i2rt/                vendored YAM SDK fork (submodule)
+  yam_teleop/hardware/ follower wrapper, i2rt compat layer, vendored GELLO driver
 ```
 
-`third_party/gello_software` and `third_party/i2rt` are git submodules pinned to
-lightly-patched forks of [wuphilipp/gello_software](https://github.com/wuphilipp/gello_software)
-and [i2rt-robotics/i2rt](https://github.com/i2rt-robotics/i2rt) (both MIT). Each
-fork keeps upstream history intact and adds only the small patches this project
-needs on top.
+The YAM SDK is upstream [i2rt-robotics/i2rt](https://github.com/i2rt-robotics/i2rt)
+(MIT), pinned to a release tag in `pyproject.toml` — no fork or submodule. The
+GELLO Dynamixel driver is vendored from
+[wuphilipp/gello_software](https://github.com/wuphilipp/gello_software) (MIT)
+under `yam_teleop/yam_teleop/hardware/gello/`.
 
 ## Getting started
 
 ```bash
-git clone --recurse-submodules <this-repo>
+git clone <this-repo>
 cd yam-teleop
 ```
 
 Then follow [`yam_teleop/README.md`](yam_teleop/README.md) for installation and
-usage.
+usage, and [`yam_teleop/SETUP_GUIDE.md`](yam_teleop/SETUP_GUIDE.md) for hardware
+setup.
 
-## Branches
-
-- **`main`** — GELLO-leader teleop + data collection + local audio-narration
-  capture and transcription.
-- **`feat/yam-leader-follower`** — bilateral YAM-leader rearchitecture
-  (teaching-handle leaders, gripper force/torque shaping, uv packaging). See
-  [`yam_teleop/SETUP_GUIDE.md`](yam_teleop/SETUP_GUIDE.md) on that branch.
+The GELLO-only codebase as it was before the leaders were unified is tagged
+`gello-legacy`.

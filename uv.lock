@@ -985,6 +985,18 @@ wheels = [
 ]
 
 [[package]]
+name = "dynamixel-sdk"
+version = "4.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyserial" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c0/93/87fb2aa84c173a93397ed165827853a54177d13e55dc3e240f400bc00247/dynamixel_sdk-4.1.0.tar.gz", hash = "sha256:9ffcc12ab72623f4bf6c0e1df8cd256a1fa19a7099204c002ff9b7fc0027e26d", size = 29655, upload-time = "2026-09-14T04:42:20.029Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/01/4a/c58bf575b5eec48ac3fe54c74c1fdd5a456ac8b03249f5e53dc0be503041/dynamixel_sdk-4.1.0-py3-none-any.whl", hash = "sha256:4cb91491edcb5c0b9d7eda34935c26ae6a37c1fe766cc6c4b58bc6583fb941f2", size = 103484, upload-time = "2026-09-14T04:42:18.661Z" },
+]
+
+[[package]]
 name = "etils"
 version = "1.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3706,12 +3718,16 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+gello = [
+    { name = "dynamixel-sdk" },
+]
 transcribe = [
     { name = "faster-whisper" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "dynamixel-sdk", marker = "extra == 'gello'" },
     { name = "faster-whisper", marker = "extra == 'transcribe'" },
     { name = "gymnasium" },
     { name = "h5py" },
@@ -3725,7 +3741,7 @@ requires-dist = [
     { name = "pyzmq" },
     { name = "tqdm" },
 ]
-provides-extras = ["transcribe"]
+provides-extras = ["transcribe", "gello"]
 
 [[package]]
 name = "yam-teleop-dev"
@@ -3737,6 +3753,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+gello = [
+    { name = "yam-teleop", extra = ["gello"] },
+]
 transcribe = [
     { name = "yam-teleop", extra = ["transcribe"] },
 ]
@@ -3745,9 +3764,10 @@ transcribe = [
 requires-dist = [
     { name = "i2rt", git = "https://github.com/i2rt-robotics/i2rt?tag=v1.3.6" },
     { name = "yam-teleop", editable = "yam_teleop" },
+    { name = "yam-teleop", extras = ["gello"], marker = "extra == 'gello'", editable = "yam_teleop" },
     { name = "yam-teleop", extras = ["transcribe"], marker = "extra == 'transcribe'", editable = "yam_teleop" },
 ]
-provides-extras = ["transcribe"]
+provides-extras = ["transcribe", "gello"]
 
 [[package]]
 name = "zipp"
