@@ -64,76 +64,83 @@ from tqdm import tqdm
 import yaml
 import zmq
 
+from yam_teleop.hardware import i2rt_compat, per_joint
+
 
 class LeaderArm:
-    """One YAM leader arm + its teaching-handle encoder (trigger + buttons)."""
+    """One YAM leader arm + its teaching-handle encoder (trigger + buttons).
+
+    Every control mode goes through _send(), which adds the optional per-joint
+    feedforward torques (stiction dither + PD virtual spring) on top of i2rt's
+    gravity compensation. They are recomputed from fresh joint state every
+    command (~200Hz), so they are active in every mode, including kp=kd=0
+    backdrive.
+
+    With sim=True the arm is i2rt's MuJoCo SimRobot: there is no teaching
+    handle (trigger reads open, buttons never press), free/bilateral modes hold
+    still, and stiff modes teleport to the setpoint. Enough to exercise the
+    whole node graph without hardware.
+    """
 
     def __init__(self, channel: str, gripper_invert: bool = True,
-                 gravity_comp_factor: float = 1.0,
+                 gravity_comp_factor=None, use_coulomb_friction: bool = False,
+                 kp=None, kd=None,
                  dither_amp=None, dither_freq: float = 30.0,
                  dither_vel_threshold=None,
-                 spring_kp=None, spring_kd=None, spring_target=None):
+                 spring_kp=None, spring_kd=None, spring_target=None,
+                 sim: bool = False):
         from i2rt.robots.get_robot import get_yam_robot
-        from i2rt.robots.utils import GripperType
+        from i2rt.robots.utils import ArmType, GripperType
 
+        self.n = 6  # a teaching handle has no gripper motor
+        self.name = f"leader[{'sim' if sim else channel}]"
         self.robot = get_yam_robot(
             channel=channel,
+            arm_type=ArmType.YAM,
             gripper_type=GripperType.YAM_TEACHING_HANDLE,
             zero_gravity_mode=True,
+            # None -> i2rt's per-joint default for the YAM. See leader.yaml.
+            gravity_comp_factor=per_joint(gravity_comp_factor, self.n, "gravity_comp_factor"),
+            use_coulomb_friction=use_coulomb_friction,
+            sim=sim,
         )
-        # i2rt's get_yam_robot hardcodes gravity_comp_factor=1.3 — a 30%
-        # over-compensation tuned for a position-controlled FOLLOWER (the PD
-        # masks it and it helps overcome friction). A leader backdrives with
-        # kp=0, so 1.3x makes the arm actively float/rise ("shoots up"). It's a
-        # plain per-tick scalar attribute, so override it here (no i2rt edit).
-        # 1.0 = neutral buoyancy; lower (~0.9) if it still drifts up, raise if
-        # it sags.
-        self.robot.gravity_comp_factor = float(gravity_comp_factor)
-        self.motor_chain = self.robot.motor_chain
-        self.nominal_kp = np.asarray(self.robot._kp, dtype=np.float64).copy()
-        self.nominal_kd = np.asarray(self.robot._kd, dtype=np.float64).copy()
-        self.n = len(self.nominal_kp)  # 6 — a teaching handle has no gripper motor
+        self.sim = i2rt_compat.is_sim(self.robot)
+        nom_kp, nom_kd = i2rt_compat.nominal_gains(self.robot, self.n)
+        self.nominal_kp = nom_kp if kp is None else per_joint(kp, self.n, "kp")
+        self.nominal_kd = nom_kd if kd is None else per_joint(kd, self.n, "kd")
         self._zero = np.zeros(self.n)
         self._gripper_invert = gripper_invert
 
-        # Optional per-joint stiction dither (torque channel; works even at
-        # kp=kd=0). Off unless dither_amp has a nonzero entry. See leader.yaml.
-        amp = (np.zeros(self.n) if dither_amp is None
-               else np.asarray(dither_amp, dtype=np.float64))
-        if amp.shape != (self.n,):
-            raise ValueError(f"dither_amp must have {self.n} entries, got {amp.shape}")
-        if np.any(amp != 0.0):
-            self.robot.dither_amp = amp
-            self.robot.dither_freq = float(dither_freq)
-            self.robot.dither_vel_threshold = (
-                None if dither_vel_threshold is None else float(dither_vel_threshold))
+        # Optional per-joint stiction dither. Off unless dither_amp has a
+        # nonzero entry. See leader.yaml.
+        amp = per_joint(dither_amp, self.n, "dither_amp")
+        self._dither_amp = amp if amp is not None and np.any(amp != 0.0) else None
+        self._dither_freq = float(dither_freq)
+        self._dither_vel_threshold = (
+            None if dither_vel_threshold is None else float(dither_vel_threshold))
+        self._t0 = time.monotonic()
 
-        # Optional per-joint PD virtual spring toward spring_target (torque
-        # channel; active in every mode). Off unless spring_kp has a nonzero
-        # entry. See leader.yaml.
-        skp = (np.zeros(self.n) if spring_kp is None
-               else np.asarray(spring_kp, dtype=np.float64))
-        if skp.shape != (self.n,):
-            raise ValueError(f"spring_kp must have {self.n} entries, got {skp.shape}")
-        if np.any(skp != 0.0):
-            skd = (np.zeros(self.n) if spring_kd is None
-                   else np.asarray(spring_kd, dtype=np.float64))
-            stg = (np.zeros(self.n) if spring_target is None
-                   else np.asarray(spring_target, dtype=np.float64))
-            if skd.shape != (self.n,) or stg.shape != (self.n,):
-                raise ValueError(f"spring_kd/spring_target must have {self.n} entries")
-            self.robot.spring_kp = skp
-            self.robot.spring_kd = skd
-            self.robot.spring_target = stg
+        # Optional per-joint PD virtual spring toward spring_target. Off unless
+        # spring_kp has a nonzero entry. See leader.yaml.
+        skp = per_joint(spring_kp, self.n, "spring_kp")
+        self._spring_kp = skp if skp is not None and np.any(skp != 0.0) else None
+        self._spring_kd = per_joint(spring_kd, self.n, "spring_kd")
+        self._spring_target = per_joint(spring_target, self.n, "spring_target")
+        if self._spring_kd is None:
+            self._spring_kd = np.zeros(self.n)
+        if self._spring_target is None:
+            self._spring_target = np.zeros(self.n)
 
     def read(self):
         """Return (joint_pos[n], gripper_pos in 0..1, buttons[2] bools)."""
+        i2rt_compat.assert_alive(self.robot, self.name)
         obs = self.robot.get_observations()
         qpos = np.asarray(obs["joint_pos"], dtype=np.float64)[: self.n]
 
         gripper_pos = 1.0
         buttons = [False, False]
-        states = self.motor_chain.get_same_bus_device_states()
+        states = (None if self.sim
+                  else self.robot.motor_chain.get_same_bus_device_states())
         if states:  # None until the encoder thread has read at least once
             enc = states[0]
             g = float(enc.position)  # i2rt already normalizes to ~0..1
@@ -146,21 +153,47 @@ class LeaderArm:
 
     def free(self, qpos: np.ndarray) -> None:
         """Gravity-comp only: zero PD, command current pose so kp=0 takes hold."""
-        self.robot.update_kp_kd(self._zero.copy(), self._zero.copy())
-        self.robot.command_joint_pos(qpos[: self.n])
+        self._send(qpos, self._zero, self._zero)
 
     def stiff_to(self, setpoint: np.ndarray) -> None:
         """Stiff PD toward a setpoint (match / reset drive)."""
-        self.robot.update_kp_kd(self.nominal_kp.copy(), self.nominal_kd.copy())
-        self.robot.command_joint_pos(np.asarray(setpoint, dtype=np.float64)[: self.n])
+        self._send(setpoint, self.nominal_kp, self.nominal_kd, stiff=True)
 
     def coupled_to(self, follower_pos: np.ndarray, bilateral_kp: float) -> None:
         """Soft bilateral PD pulling the leader toward the follower pose."""
-        self.robot.update_kp_kd(self.nominal_kp * bilateral_kp, self._zero.copy())
-        self.robot.command_joint_pos(np.asarray(follower_pos, dtype=np.float64)[: self.n])
+        self._send(follower_pos, self.nominal_kp * bilateral_kp, self._zero)
 
     def close(self) -> None:
         self.robot.close()
+
+    def _send(self, pos, kp: np.ndarray, kd: np.ndarray, stiff: bool = False) -> None:
+        pos = np.asarray(pos, dtype=np.float64)[: self.n]
+        if self.sim:
+            # No PD dynamics in sim: hold still unless stiffly driven.
+            if stiff:
+                self.robot.command_joint_pos(pos)
+            return
+        obs = self.robot.get_observations()
+        q = np.asarray(obs["joint_pos"], dtype=np.float64)[: self.n]
+        qd = np.asarray(obs["joint_vel"], dtype=np.float64)[: self.n]
+        i2rt_compat.command_with_feedforward(
+            self.robot, pos, kp, kd, self._feedforward(q, qd))
+
+    def _feedforward(self, q: np.ndarray, qd: np.ndarray) -> np.ndarray:
+        """Stiction dither + virtual spring torque (Nm per joint)."""
+        tau = np.zeros(self.n)
+        if self._dither_amp is not None:
+            # sign(sin) -> +/-amp square wave; symmetric so it averages to zero
+            # and doesn't bias the resting position. Only near-stationary joints
+            # are dithered when a velocity threshold is set.
+            t = time.monotonic() - self._t0
+            d = self._dither_amp * np.sign(np.sin(2.0 * np.pi * self._dither_freq * t))
+            if self._dither_vel_threshold is not None:
+                d = np.where(np.abs(qd) < self._dither_vel_threshold, d, 0.0)
+            tau += d
+        if self._spring_kp is not None:
+            tau += self._spring_kp * (self._spring_target - q) - self._spring_kd * qd
+        return tau
 
 
 def _slew(setpoint: np.ndarray, target: np.ndarray, max_delta: float) -> np.ndarray:
@@ -322,10 +355,13 @@ def main():
     # Safety watchdog: if the controller stops sending its heartbeat (or any
     # command) for this long while engaged, the leader drops to IDLE (limp).
     watchdog_timeout = float(cfg.get("watchdog_timeout", 1.0))
-    # Gravity-comp scale (overrides i2rt's hardcoded 1.3). Optional per-arm.
-    gcf = float(cfg.get("gravity_comp_factor", 1.0))
-    gcf_left = float(cfg["left"].get("gravity_comp_factor", gcf))
-    gcf_right = float(cfg["right"].get("gravity_comp_factor", gcf))
+    # Gravity-comp scale: scalar or 6 per-joint values; null/absent = i2rt's
+    # per-joint default. Optional per-arm override under left/right.
+    gcf = cfg.get("gravity_comp_factor")
+    gcf_left = cfg["left"].get("gravity_comp_factor", gcf)
+    gcf_right = cfg["right"].get("gravity_comp_factor", gcf)
+    use_coulomb_friction = bool(cfg.get("use_coulomb_friction", False))
+    sim = bool(cfg.get("sim", False))
     # Safe-shutdown pose: on the node's own Ctrl+C the leader arms ease (stiff
     # PD, gradual) to this pose before motors off, instead of dropping limp. 6
     # joints per arm (teaching handle has no gripper); shared by both arms. This
@@ -348,16 +384,22 @@ def main():
     spring_kd = cfg.get("spring_kd", [0.0] * 6)
     spring_target = cfg.get("spring_target", [0.0] * 6)
 
-    print(f"Initializing left YAM leader arm (gravity_comp_factor={gcf_left})...")
-    left = LeaderArm(cfg["left"]["can_channel"], gripper_invert, gcf_left,
-                     dither_amp_left, dither_freq, dither_vel_threshold,
-                     spring_kp=spring_kp, spring_kd=spring_kd,
-                     spring_target=spring_target)
-    print(f"Initializing right YAM leader arm (gravity_comp_factor={gcf_right})...")
-    right = LeaderArm(cfg["right"]["can_channel"], gripper_invert, gcf_right,
-                      dither_amp_right, dither_freq, dither_vel_threshold,
-                      spring_kp=spring_kp, spring_kd=spring_kd,
-                      spring_target=spring_target)
+    def make_leader(side: str, gcf_side, dither_amp_side) -> LeaderArm:
+        print(f"Initializing {side} YAM leader arm{' (MuJoCo sim)' if sim else ''} "
+              f"(gravity_comp_factor={gcf_side if gcf_side is not None else 'i2rt default'})...")
+        return LeaderArm(
+            cfg[side]["can_channel"], gripper_invert,
+            gravity_comp_factor=gcf_side,
+            use_coulomb_friction=use_coulomb_friction,
+            kp=cfg[side].get("kp", cfg.get("kp")),
+            kd=cfg[side].get("kd", cfg.get("kd")),
+            dither_amp=dither_amp_side, dither_freq=dither_freq,
+            dither_vel_threshold=dither_vel_threshold,
+            spring_kp=spring_kp, spring_kd=spring_kd, spring_target=spring_target,
+            sim=sim)
+
+    left = make_leader("left", gcf_left, dither_amp_left)
+    right = make_leader("right", gcf_right, dither_amp_right)
 
     # ZMQ sockets
     ctx = zmq.Context()

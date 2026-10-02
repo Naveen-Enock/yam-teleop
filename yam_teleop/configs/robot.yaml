@@ -14,6 +14,22 @@ right:
   gripper_type: linear_4310
   zero_gravity_mode: true
 
+# true = run both followers as i2rt MuJoCo sims (no CAN). The sim teleports to
+# each command (no dynamics, no gripper force limiting) — for testing the node
+# graph on a dev machine, not for tuning.
+sim: false
+
+# Gravity-comp scale (scalar or 6 per-joint values). Remove/null to use i2rt's
+# per-joint YAM default [1.0, 1.1, 1.1, 1.2, 1.0, 1.0]; the pre-upgrade fork
+# hardcoded 1.3. May be overridden per arm under left/right.
+# gravity_comp_factor: 1.3
+
+# Arm PD gains (6 values each; gripper gains stay at i2rt's). Remove to use
+# i2rt's YAM defaults kp [80,80,80,10,10,10], kd [5,5,5,1.5,1.5,1.5]. The
+# pre-upgrade fork used kp 40 on joint 3 (stiffer wrist tracking).
+# kp: [80.0, 80.0, 80.0, 40.0, 10.0, 10.0]
+# kd: [5.0, 5.0, 5.0, 1.5, 1.5, 1.5]
+
 publish_rate_hz: 200
 zmq_state_port: 5002
 zmq_cmd_port: 5003
@@ -30,7 +46,8 @@ home_position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
 # Max joint movement per step during shutdown reset (radians)
 shutdown_max_delta: 0.01
 
-# Gripper force limit (Newtons). Lower = safer for rigid objects.
+# Gripper force limit (Newtons; 0 disables). Lower = safer for rigid objects.
+# (i2rt's get_yam_robot hardcodes 50 N; robot_node replaces it with this.)
 gripper_max_force: 10.0
 
 # Gripper command slew limit (stroke-fraction/s; 0 disables). Caps how fast the
@@ -40,7 +57,7 @@ gripper_max_force: 10.0
 gripper_max_speed: 1.0
 
 # Hard cap (Nm) on gripper motor torque (0 disables). While the gripper is stalled,
-# i2rt clamps the commanded position error so torque = kp*(cmd-actual) stays under
-# this. 1.5 Nm ~= 103 N gross. Must stay above the steady hold torque (~0.45 Nm at
+# robot_node clamps each gripper command to within cap/kp of the actual position
+# so torque = kp*(cmd-actual) stays under this. 1.5 Nm ~= 103 N gross. Must stay above the steady hold torque (~0.45 Nm at
 # gripper_max_force 10) or it fights the hold.
 gripper_torque_cap: 1.5

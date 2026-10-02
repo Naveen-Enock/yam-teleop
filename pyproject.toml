@@ -1,7 +1,7 @@
 # uv workspace root for yam-teleop development.
 #
-# Aggregates the editable workspace members we develop against: the vendored
-# i2rt YAM SDK (third_party/i2rt submodule) and yam_teleop. A single
+# i2rt (the YAM SDK) comes straight from upstream, pinned to a release tag —
+# no fork, no submodule. To upgrade, bump the tag below and re-run `uv sync`.
 #   uv sync                    -> i2rt + yam_teleop (editable)
 #   uv sync --extra transcribe -> + faster-whisper transcription
 [project]
@@ -18,10 +18,14 @@ transcribe = ["yam_teleop[transcribe]"]
 
 [tool.uv]
 package = false
+# Mirrors upstream i2rt's own [tool.uv] setting (not inherited by dependents):
+# ruckig 0.15.3 ships only an sdist, and its build breaks under
+# scikit-build-core >= 0.10.
+build-constraint-dependencies = ["scikit-build-core<0.10"]
 
 [tool.uv.workspace]
-members = ["third_party/i2rt", "yam_teleop"]
+members = ["yam_teleop"]
 
 [tool.uv.sources]
-i2rt = { workspace = true }
+i2rt = { git = "https://github.com/i2rt-robotics/i2rt", tag = "v1.3.6" }
 yam_teleop = { workspace = true }

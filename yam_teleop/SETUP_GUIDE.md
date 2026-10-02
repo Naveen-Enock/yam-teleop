@@ -23,11 +23,27 @@ to find its range) — keep grippers clear when launching `robot_node`.
 ## 2. One-time setup
 
 ### 2a. Environment
+A few dependencies build from source (`pyaudio`, and i2rt's `ruckig`), so
+install a C/C++ toolchain and PortAudio first:
+```bash
+sudo apt install build-essential portaudio19-dev
+```
 This repo is a [uv](https://docs.astral.sh/uv/) workspace. From the repo root:
 ```bash
 uv sync
 ```
 Prefix commands with `uv run`, or `source .venv/bin/activate` once per shell.
+
+The YAM SDK is upstream [i2rt](https://github.com/i2rt-robotics/i2rt), pinned to
+a release tag under `[tool.uv.sources]` in the root `pyproject.toml`. To upgrade
+i2rt, bump that tag, `uv sync`, and re-check
+`yam_teleop/hardware/i2rt_compat.py` (the only code that touches i2rt
+internals).
+
+**No hardware?** Set `sim: true` in `robot.yaml` and `leader.yaml` to run the
+arms as i2rt MuJoCo sims, and use `--camera-mock`. The whole node graph runs,
+including the reset drive; the sim leaders have no teaching handle, so the
+"squeeze both triggers" step never completes.
 
 ### 2b. Configure CAN bus names (critical)
 The code matches arms by **persistent CAN interface name**, so each adapter must
@@ -40,20 +56,20 @@ come up as a fixed name:
 | Left leader | `can_leader_l` |
 | Right leader | `can_leader_r` |
 
-Follow i2rt's persistent-CAN-ID guide (`i2rt/docs/guides/set-persistent-can-ids.md`)
+Follow i2rt's [persistent-CAN-ID guide](https://github.com/i2rt-robotics/i2rt/blob/main/docs/guides/set-persistent-can-ids.md)
 to assign these names (udev rules keyed on each adapter's serial). Plug in **one
 adapter at a time** while assigning. Verify all four are up:
 ```bash
 ip -br link show type can
 # can_follower_l  UP ... / can_follower_r UP ... / can_leader_l UP ... / can_leader_r UP
 ```
-If a bus is `DOWN` after a power cycle, bring it up (e.g. `sudo ip link set <name> up type can bitrate 1000000`, or i2rt's `scripts/reset_all_can.sh`). The names **must** match the configs below.
+If a bus is `DOWN` after a power cycle, bring it up (e.g. `sudo ip link set <name> up type can bitrate 1000000`, or i2rt's [`scripts/reset_all_can.sh`](https://github.com/i2rt-robotics/i2rt/blob/main/scripts/reset_all_can.sh)). The names **must** match the configs below.
 
 ### 2c. Configs (`yam_teleop/configs/`)
 | File | Set |
 |------|-----|
 | `robot.yaml` | follower CAN channels (`can_follower_l/r`), `gripper_type: linear_4310`, `gripper_max_open`, `gripper_max_force` |
-| `leader.yaml` | leader CAN channels (`can_leader_l/r`), `gravity_comp_factor` (default 1.3; per-arm override if an arm drifts), `bilateral_kp`, `gripper_invert` |
+| `leader.yaml` | leader CAN channels (`can_leader_l/r`), `gravity_comp_factor` (1.3; per-arm override if an arm drifts), `bilateral_kp`, `gripper_invert` |
 | `camera.yaml` | camera `device_id`s, resolution/exposure (real cameras) |
 | `camera_mock.yaml` | nothing — synthetic cameras for dev without USB cameras |
 | `env.yaml` | `home_position` (raised start pose), reset speed, control freq |
@@ -129,15 +145,21 @@ wrong function on your handles, flip the indices in `yam_leader_node.py`.)
 ## 5. Tuning (on hardware)
 
 In `leader.yaml`:
-- **`gravity_comp_factor`** (default `1.3`) — leader buoyancy. 1.3 suits healthy
-  arms; if an arm floats **up**, lower it for *that arm* via a per-arm override:
+- **`gravity_comp_factor`** (set to `1.3`) — leader buoyancy; a scalar or 6
+  per-joint values. Remove it to use i2rt's per-joint YAM default
+  `[1.0, 1.1, 1.1, 1.2, 1.0, 1.0]`. 1.3 suits healthy arms; if an arm floats
+  **up**, lower it for *that arm* via a per-arm override:
   ```yaml
   left:
     can_channel: can_leader_l
     gravity_comp_factor: 1.0
   ```
+- **`use_coulomb_friction`** (default `false`) — i2rt's friction feedforward;
+  lightens backdrive. Try it before raising `dither_amp`.
 - **`bilateral_kp`** (default `0.1`) — force feedback strength (i2rt rec 0.1–0.2).
   `0` = pure passive (no feedback).
+- **`kp` / `kd`** (optional) — leader PD gains for the stiff reset/resume drives.
+  Unset = i2rt's YAM defaults (kp `[80,80,80,10,10,10]`).
 - **`gripper_invert`** (default `true`) — if the follower gripper *opens* when you
   squeeze, set `false`.
 - **`watchdog_timeout`** (default `1.0` s) — if the running collection/teleop
@@ -152,6 +174,11 @@ In `leader.yaml`:
 In `robot.yaml`:
 - **`gripper_max_open`** — command-space open extent for the linear gripper.
 - **`gripper_max_force`** — lower = safer on rigid objects.
+- **`gripper_torque_cap`** — hard cap (Nm) on stalled-gripper torque.
+- **`kp` / `kd`, `gravity_comp_factor`** (optional) — follower tracking gains and
+  gravity comp. Unset = i2rt's YAM defaults. The pre-upgrade i2rt fork used
+  kp 40 on joint 3 (now 10) and a flat 1.3 gravity factor — uncomment the
+  values in `robot.yaml` if wrist tracking feels soft.
 
 In `env.yaml`:
 - **`leader_reset_waypoint`** — 6-joint pose the leaders pass through on reset
@@ -193,3 +220,4 @@ converters/labelers keep working — it's just a legacy label now.
 | Follower grippers move at startup | normal — `linear_4310` auto-calibration; keep them clear |
 | Leader/follower jump at teleop start | they weren't matched — let the reset "match" finish before squeezing |
 | Leader suddenly goes limp mid-use | watchdog fired — the controlling script stopped/lost its heartbeat; relaunch it |
+| A node exits with `i2rt control loop stopped (motor comms lost?)` | i2rt fails fast on lost CAN comms — check that arm's power / CAN cable / `ip -br link`, then restart the node |

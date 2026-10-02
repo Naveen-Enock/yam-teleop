@@ -23,8 +23,10 @@ Then launch the stack:
 ```
 
 **See [`SETUP_GUIDE.md`](SETUP_GUIDE.md)** for full hardware setup, CAN bus
-configuration, and operation. The vendored `i2rt` YAM SDK lives under
-`../third_party/i2rt` (git submodule).
+configuration, and operation. The YAM SDK is upstream
+[i2rt](https://github.com/i2rt-robotics/i2rt), pinned to a release tag in the
+root `pyproject.toml`; the few places this package goes beyond i2rt's public
+API are collected in `yam_teleop/hardware/i2rt_compat.py`.
 
 ## Nodes
 

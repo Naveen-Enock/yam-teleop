@@ -1,3 +1,0 @@
-[submodule "third_party/i2rt"]
-	path = third_party/i2rt
-	url = git@github.com:alanwlm/i2rt.git

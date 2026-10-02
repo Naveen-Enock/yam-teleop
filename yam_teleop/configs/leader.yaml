@@ -7,23 +7,41 @@ left:
 right:
   can_channel: can_leader_r
 
-# Gravity-compensation scale for the LEADER arms (applied as torque + g*factor;
-# i2rt's get_yam_robot hardcodes 1.3 internally — we re-apply it here so it's
-# tunable). 1.3 is the value tuned for healthy YAM arms; on a brand-new arm it
-# gives a clean backdrive. A worn/beat-up arm may float UP at 1.3 — lower it
-# (~1.0) for that arm via a per-arm override under left/right.
+# true = run both leaders as i2rt MuJoCo sims (no CAN / teaching handles) to
+# exercise the node graph on a dev machine. Pair with robot.yaml `sim: true`.
+sim: false
+
+# Gravity-compensation scale for the LEADER arms (applied as torque + g*factor).
+# A scalar, or 6 per-joint values base->wrist; remove/null to use i2rt's
+# per-joint YAM default [1.0, 1.1, 1.1, 1.2, 1.0, 1.0]. 1.3 matches the value
+# the pre-upgrade i2rt fork hardcoded, which these arms were tuned with —
+# re-check the backdrive feel after the i2rt upgrade. A worn/beat-up arm may
+# float UP at 1.3 — lower it (~1.0) for that arm via a per-arm override under
+# left/right.
 gravity_comp_factor: 1.3
+
+# i2rt's Coulomb-friction feedforward (coulomb_friction * sign(joint vel), per-
+# joint values from i2rt's YAM config) on top of gravity comp. Makes backdrive
+# lighter; try it before raising the stiction dither below.
+use_coulomb_friction: false
+
+# Leader PD gains, used for the stiff RESET / clutch-resume drives and scaled by
+# bilateral_kp for force feedback. 6 values each; remove to use i2rt's YAM
+# defaults (kp [80,80,80,10,10,10], kd [5,5,5,1.5,1.5,1.5]). The pre-upgrade
+# fork used kp 40 on joint 3.
+# kp: [80.0, 80.0, 80.0, 40.0, 10.0, 10.0]
+# kd: [5.0, 5.0, 5.0, 1.5, 1.5, 1.5]
 
 # Stiction dither: a small zero-mean square-wave torque added to each leader
 # joint (ON TOP of gravity comp) to keep it micro-moving so static friction
-# doesn't grab. It rides the torque channel, so it works even in IDLE (kp=kd=0
-# backdrive). Per-joint amplitude in Nm, base->wrist (6 joints, no gripper).
+# doesn't grab. It rides i2rt's feedforward torque channel (recomputed every
+# leader tick, publish_rate_hz), so it works even in IDLE (kp=kd=0 backdrive). Per-joint amplitude in Nm, base->wrist (6 joints, no gripper).
 # START AT 0 and raise each joint until stiction breaks free without a
 # perceptible buzz — the DM4340 base joints (0-2) generally need more than the
 # DM4310 wrist joints (3-5). All zeros = OFF (default). May be overridden per
 # arm under left:/right: if the two arms differ.
 dither_amp: [0.5, 0.5, 0.7, 0.0, 0.0, 0.0]
-dither_freq: 30.0   # Hz; ~30-50 works well (i2rt control loop is ~250Hz)
+dither_freq: 30.0   # Hz; ~30-50 works well (keep well under publish_rate_hz / 2)
 # Only dither a joint while it's near-stationary (|vel| < this, rad/s) so the
 # dither doesn't add noise during active motion or leak into the follower.
 # Set to null to dither always.
@@ -73,7 +91,7 @@ robot_state_port: 5002  # follower state stream (robot_node PUB) for bilateral
 leader_feel: free
 
 # Bilateral force feedback gain (used when leader_feel: bilateral): scales the
-# arm's nominal joint kp ([80,80,80,40,10,10]) with kd=0. i2rt recommends
+# leader kp above (i2rt default [80,80,80,10,10,10]) with kd=0. i2rt recommends
 # 0.1-0.2; 0 = pure passive backdrive (old gello feel). Start conservative for
 # first hardware bring-up.
 bilateral_kp: 0.1

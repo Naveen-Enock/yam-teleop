@@ -70,15 +70,20 @@ def safe_return_to_home(left_arm: YamFollower, right_arm: YamFollower,
         print("  Shutdown interrupted — stopping where we are.")
 
 
-def make_yam_arm(arm_cfg: dict, gripper_max_force: float,
-                 gripper_torque_cap: float) -> YamFollower:
-    """Create a follower YAM arm from config."""
+def make_yam_arm(cfg: dict, side: str) -> YamFollower:
+    """Create a follower YAM arm from config (per-arm keys override top-level)."""
+    arm_cfg = cfg[side]
     return YamFollower(
         channel=arm_cfg["can_channel"],
         gripper_type=arm_cfg["gripper_type"],
         zero_gravity_mode=arm_cfg["zero_gravity_mode"],
-        limit_gripper_force=gripper_max_force,
-        gripper_torque_cap=gripper_torque_cap,
+        limit_gripper_force=cfg.get("gripper_max_force", 50.0),
+        gripper_torque_cap=cfg.get("gripper_torque_cap", 0.0),
+        gravity_comp_factor=arm_cfg.get(
+            "gravity_comp_factor", cfg.get("gravity_comp_factor")),
+        kp=arm_cfg.get("kp", cfg.get("kp")),
+        kd=arm_cfg.get("kd", cfg.get("kd")),
+        sim=bool(cfg.get("sim", False)),
     )
 
 
@@ -110,10 +115,11 @@ def main():
     gripper_torque_cap = cfg.get("gripper_torque_cap", 0.0)
 
     # Initialize both YAM arms
-    print("Initializing left YAM arm...")
-    left_arm = make_yam_arm(cfg["left"], gripper_max_force, gripper_torque_cap)
-    print("Initializing right YAM arm...")
-    right_arm = make_yam_arm(cfg["right"], gripper_max_force, gripper_torque_cap)
+    sim_note = " (MuJoCo sim)" if cfg.get("sim", False) else ""
+    print(f"Initializing left YAM arm{sim_note}...")
+    left_arm = make_yam_arm(cfg, "left")
+    print(f"Initializing right YAM arm{sim_note}...")
+    right_arm = make_yam_arm(cfg, "right")
 
     # ZMQ sockets
     ctx = zmq.Context()
@@ -301,10 +307,16 @@ def main():
         cmd_sub.close()
         ctx.term()
 
-        # Safe shutdown: gradually move arms to home position
+        # Safe shutdown: gradually move arms to home position. Guarded so the
+        # motors always power down even if the move fails (e.g. one arm's
+        # control loop died) — never leave the arms energized-but-stuck.
         home = np.array(cfg["home_position"], dtype=np.float32)
         max_delta = cfg.get("shutdown_max_delta", 0.01)
-        safe_return_to_home(left_arm, right_arm, home, max_delta)
+        try:
+            safe_return_to_home(left_arm, right_arm, home, max_delta)
+        except Exception as e:
+            print(f"  Safe return failed ({type(e).__name__}: {e}); "
+                  f"powering motors off anyway.", file=sys.stderr)
 
         left_arm.close()
         right_arm.close()
