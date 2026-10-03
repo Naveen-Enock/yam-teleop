@@ -118,7 +118,7 @@ class YamFollower:
 
     def close(self) -> None:
         if hasattr(self.robot, "close"):
-            self.robot.close()
+            i2rt_compat.close_robot(self.robot)
 
     def _cap_gripper_command(self, cmd: float) -> float:
         """Cap gripper torque while stalled.

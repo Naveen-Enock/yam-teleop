@@ -18,6 +18,7 @@ dependencies = [
     "pyaudio",             # per-episode audio capture (record_audio) — needs system portaudio
     "matplotlib",          # collect plotting + live gripper plot
     "pyqt5",               # interactive backend for robot_node --plot-gripper live window
+    "evdev ; sys_platform == 'linux'",  # foot pedals (foot_pedal.py); came via the old i2rt fork
 ]
 
 [project.optional-dependencies]

@@ -18,12 +18,12 @@ sim: false
 # re-check the backdrive feel after the i2rt upgrade. A worn/beat-up arm may
 # float UP at 1.3 — lower it (~1.0) for that arm via a per-arm override under
 # left/right.
-gravity_comp_factor: 1.3
+gravity_comp_factor: 1.2
 
 # i2rt's Coulomb-friction feedforward (coulomb_friction * sign(joint vel), per-
 # joint values from i2rt's YAM config) on top of gravity comp. Makes backdrive
 # lighter; try it before raising the stiction dither below.
-use_coulomb_friction: false
+use_coulomb_friction: true
 
 # Leader PD gains, used for the stiff RESET / clutch-resume drives and scaled by
 # bilateral_kp for force feedback. 6 values each; remove to use i2rt's YAM

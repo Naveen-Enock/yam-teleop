@@ -6,13 +6,13 @@ Successor to collect_data.py for the YAM-leader teleop stack. Differences:
     and the recorded HDF5 schema is the same (the leader stream is still stored
     under the "gello" group for downstream-tool compatibility).
   - Sub-task MARKERS come from the teaching-handle marker button (button 0,
-    via the leader's monotonic buttons.marker_seq) OR the audio foot pedal OR
-    the 'm' key. Stored as a `subtask_markers` dataset (step indices) in the
-    HDF5 — no audio/microphone anymore (that path is deprecated and removed).
+    via the leader's monotonic buttons.marker_seq) OR the 'm' key. Stored as a
+    `subtask_markers` dataset (step indices) in the HDF5 — no audio/microphone
+    anymore (that path is deprecated and removed).
   - CLUTCH (handle button 1): while the leader reports mode == "suspended" the
     follower holds and recording pauses; on resume it continues seamlessly.
-  - Foot pedals are OPTIONAL. With pedals: right = SUCCESS, left = FAILURE,
-    audio pedal = marker. Without pedals (e.g. a dev box): keyboard fallback
+  - Foot pedals are OPTIONAL and end the episode: single-button pedal or
+    right pedal = SUCCESS, left pedal = FAILURE. Keyboard always works too:
     s = SUCCESS, f = FAILURE, m = marker. 'q' quits in both cases.
 
 The old collect_data.py is left untouched for backward compatibility.
@@ -246,9 +246,9 @@ def main():
     print("  1. Follower reset to start pose (grippers open then close)")
     print("  2. Leader matches follower; squeeze both triggers to start")
     print("  3. Teleop + recording")
-    print("  4. Marker: handle button 0 / audio pedal / 'm'")
+    print("  4. Marker: handle button 0 / 'm'")
     print("  5. Clutch: handle button 1 (pause/resume)")
-    print("  6. End: right pedal / 's' = SUCCESS, left pedal / 'f' = FAILURE")
+    print("  6. End: pedal / 's' = SUCCESS, 'f' = FAILURE")
     print(f"  Trigger close threshold: {args.gripper_threshold}")
     print(f"  Leader cmd port: {args.leader_cmd_port}")
     print(f"  Video codec: {args.video_codec}\n")
@@ -256,9 +256,11 @@ def main():
     def poll_outcome(key):
         """Return True (success) / False (failure) / None from pedal or key."""
         if hub is not None:
-            pedal = hub.poll_press({KEY_FAILURE, KEY_SUCCESS})
+            # Single-button pedal (KEY_AUDIO) ends the episode as SUCCESS;
+            # failures use the 'f' key (or a 2-button pedal if attached).
+            pedal = hub.poll_press({KEY_FAILURE, KEY_SUCCESS, KEY_AUDIO})
             if pedal is not None:
-                return pedal == KEY_SUCCESS
+                return pedal != KEY_FAILURE
         if key == "s":
             return True
         if key == "f":
@@ -366,8 +368,6 @@ def main():
                 marker_seq = buttons.get("marker_seq", last_marker_seq)
                 marker_hit = marker_seq != last_marker_seq
                 last_marker_seq = marker_seq
-                if hub is not None and hub.poll_press({KEY_AUDIO}):
-                    marker_hit = True
                 if key == "m":
                     marker_hit = True
                 if marker_hit:

@@ -19,7 +19,7 @@ VENDOR_ID = 0x3553
 PRODUCT_ID = 0xB001
 
 # Well-known key assignments
-KEY_AUDIO = ecodes.KEY_A
+KEY_AUDIO = ecodes.KEY_RIGHTSHIFT
 KEY_FAILURE = ecodes.KEY_LEFTBRACE
 KEY_SUCCESS = ecodes.KEY_RIGHTBRACE
 

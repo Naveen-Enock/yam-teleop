@@ -1,9 +1,9 @@
 # Camera node configuration
 cameras:
   top:
-    device_id: 2
-  left_wrist:
     device_id: 4
+  left_wrist:
+    device_id: 2
   right_wrist:
     device_id: 0
 

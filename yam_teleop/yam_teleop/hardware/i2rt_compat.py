@@ -10,6 +10,8 @@ none of these internals.
 
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 
 
@@ -33,6 +35,63 @@ def assert_alive(robot, name: str) -> None:
         raise RuntimeError(
             f"{name}: i2rt control loop stopped (motor comms lost?) — "
             f"check the CAN bus / arm power and restart this node")
+
+
+def patch_trigger_wrap() -> None:
+    """Fold the teaching-handle trigger angle into (-pi, pi] before i2rt clips it.
+
+    The trigger is a single-turn absolute magnetic encoder (4096 counts = 2*pi).
+    Its stored zero offset can be wrong by a whole revolution -- e.g. if the
+    EEPROM zero drifts or reverts on a power cycle -- which parks the resting
+    trigger near +/-2*pi instead of 0. ``PassiveEncoderReader.read_encoder``
+    clips to +/-range_rad (~0.7) and normalizes, assuming |pos| stays within the
+    stroke, so a wrapped rest angle saturates it and freezes the gripper command
+    (norm pinned to 1.0). The real stroke is far smaller than pi, so folding
+    cancels any whole-revolution zero error and leaves valid readings untouched.
+
+    Patches the class (idempotent); call before building the leader robots.
+    The pre-upgrade i2rt fork carried this in dm_driver.py; upstream v1.3.6
+    does not.
+    """
+    from i2rt.motor_drivers.dm_driver import PassiveEncoderReader
+
+    parse = PassiveEncoderReader._parse_encoder_message
+    if getattr(parse, "_yam_teleop_wrap", False):
+        return
+
+    def _parse_folded(self, message):
+        pos, vel, button_state = parse(self, message)
+        return (pos + np.pi) % (2 * np.pi) - np.pi, vel, button_state
+
+    _parse_folded._yam_teleop_wrap = True
+    PassiveEncoderReader._parse_encoder_message = _parse_folded
+
+
+def close_robot(robot, timeout: float = 2.0) -> None:
+    """``robot.close()``, but stop the CAN control thread before the bus closes.
+
+    Upstream ``DMChainCanInterface.close()`` sets ``running = False`` and shuts
+    the CAN bus straight away without joining its control thread, so a send
+    already in flight hits the closed socket and the thread dies with a
+    "file descriptor cannot be a negative integer (-1)" traceback after every
+    clean shutdown. The pre-upgrade fork joined the thread first; do that here.
+    i2rt keeps no handle to that thread, so find it by its bound target.
+    """
+    if is_sim(robot):
+        robot.close()
+        return
+    # Same order as MotorChainRobot.close(): stop the server loop that feeds
+    # the chain commands, then the chain loop, then let close() shut the bus.
+    robot._stop_event.set()
+    robot._server_thread.join()
+    chain = robot.motor_chain
+    chains = list(getattr(chain, "interfaces", [chain]))
+    for c in chains:
+        c.running = False
+    for t in threading.enumerate():
+        if getattr(getattr(t, "_target", None), "__self__", None) in chains:
+            t.join(timeout)
+    robot.close()
 
 
 def set_gripper_force_limit(robot, max_force_n: float) -> None:

@@ -94,6 +94,7 @@ class LeaderArm:
 
         self.n = 6  # a teaching handle has no gripper motor
         self.name = f"leader[{'sim' if sim else channel}]"
+        i2rt_compat.patch_trigger_wrap()
         self.robot = get_yam_robot(
             channel=channel,
             arm_type=ArmType.YAM,
@@ -164,7 +165,7 @@ class LeaderArm:
         self._send(follower_pos, self.nominal_kp * bilateral_kp, self._zero)
 
     def close(self) -> None:
-        self.robot.close()
+        i2rt_compat.close_robot(self.robot)
 
     def _send(self, pos, kp: np.ndarray, kd: np.ndarray, stiff: bool = False) -> None:
         pos = np.asarray(pos, dtype=np.float64)[: self.n]
