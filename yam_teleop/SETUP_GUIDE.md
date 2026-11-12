@@ -38,6 +38,17 @@ uv sync
 ```
 Prefix commands with `uv run`, or `source .venv/bin/activate` once per shell.
 
+**GPU video encoding.** Recording encodes the camera streams with NVIDIA NVENC
+by default (`--video-codec nvenc_hq`), so encoding stays off the CPU the
+control nodes need. The host needs an NVIDIA GPU with the proprietary driver and
+an ffmpeg built with NVENC (Ubuntu's `apt install ffmpeg` is). Check both:
+```bash
+nvidia-smi && ffmpeg -hide_banner -encoders | grep h264_nvenc
+```
+The collect scripts run a short test encode at startup and stop with an error if
+NVENC is unavailable. The CPU presets (`h264*`) still exist for machines
+without a GPU, but at 3 × 1080p60 they cause teleop jitter.
+
 The YAM SDK is upstream [i2rt](https://github.com/i2rt-robotics/i2rt), pinned to
 a release tag under `[tool.uv.sources]` in the root `pyproject.toml`. To upgrade
 i2rt, bump that tag, `uv sync`, and re-check
@@ -225,6 +236,8 @@ converters/labelers keep working — it's just a legacy label now.
 | Leader/follower jump at teleop start | they weren't matched — let the reset "match" finish before squeezing |
 | Leader suddenly goes limp mid-use | watchdog fired — the controlling script stopped/lost its heartbeat; relaunch it |
 | A node exits with `i2rt control loop stopped (motor comms lost?)` | i2rt fails fast on lost CAN comms — check that arm's power / CAN cable / `ip -br link`, then restart the node |
+| Collect script stops at startup with `h264_nvenc test encode failed` | no NVIDIA driver / NVENC-less ffmpeg / other apps holding NVENC sessions — see §2a |
+| Teleop jitters while recording; `[diag] video_backlog` keeps climbing or an `encoder backlog full` warning prints | the encoder can't keep up — use a CPU-free preset (`nvenc_hq` → `nvenc` → `nvenc_fast`); never `h264*` at full camera load |
 
 ---
 

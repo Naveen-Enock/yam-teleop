@@ -48,6 +48,7 @@ from yam_teleop.video import (
     DEFAULT_PRESET,
     VIDEO_PRESETS,
     StreamingVideoWriter,
+    check_encoder,
 )
 
 # Leader trigger value must be below this to count as "closed" (squeezed).
@@ -208,12 +209,18 @@ def main():
                         help="ZMQ port for leader commands (default: 5006)")
     parser.add_argument("--video-codec", default=DEFAULT_PRESET,
                         choices=list(VIDEO_PRESETS.keys()),
-                        help=f"Video codec preset (default: {DEFAULT_PRESET})")
+                        help=f"Video codec preset (default: {DEFAULT_PRESET}; nvenc_* = GPU, h264_* = CPU)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
     task_name = Path(args.output_dir).name
     codec_config = VIDEO_PRESETS[args.video_codec]
+    # Fail now (not mid-episode) if the encoder can't run on this machine.
+    check_encoder(codec_config)
+    if not codec_config.is_gpu:
+        print(f"WARNING: --video-codec {args.video_codec} encodes on the CPU; "
+              "at full camera load this competes with the control nodes "
+              "and causes teleop jitter. Prefer an nvenc preset.")
 
     env = YAMBimanualEnv(args.env_config)
     with open(args.env_config) as f:
@@ -408,7 +415,8 @@ def main():
                     fps = ((step_count - recorded_at_last_diag) /
                            (now_t - last_diag_t))
                     print(f"  [diag] recorded={step_count} fps={fps:.1f} "
-                          f"markers={len(episode['subtask_markers'])}")
+                          f"markers={len(episode['subtask_markers'])} "
+                          f"video_backlog={video_writer.peak_backlog()}")
                     last_diag_t = now_t
                     recorded_at_last_diag = step_count
 

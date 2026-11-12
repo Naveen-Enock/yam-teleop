@@ -39,6 +39,7 @@ from yam_teleop.video import (
     DEFAULT_PRESET,
     VIDEO_PRESETS,
     StreamingVideoWriter,
+    check_encoder,
 )
 
 # GELLO gripper value must be below this to count as "closed" (trigger squeezed)
@@ -305,7 +306,7 @@ def main():
                         help="ZMQ port for GELLO commands (default: 5006)")
     parser.add_argument("--video-codec", default=DEFAULT_PRESET,
                         choices=list(VIDEO_PRESETS.keys()),
-                        help=f"Video codec preset (default: {DEFAULT_PRESET})")
+                        help=f"Video codec preset (default: {DEFAULT_PRESET}; nvenc_* = GPU, h264_* = CPU)")
     parser.add_argument("--debug-plot", action="store_true",
                         help="Plot GELLO vs YAM joint positions after each episode")
     parser.add_argument("--skip-mic-check", action="store_true",
@@ -315,6 +316,12 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     task_name = Path(args.output_dir).name
     codec_config = VIDEO_PRESETS[args.video_codec]
+    # Fail now (not mid-episode) if the encoder can't run on this machine.
+    check_encoder(codec_config)
+    if not codec_config.is_gpu:
+        print(f"WARNING: --video-codec {args.video_codec} encodes on the CPU; "
+              "at full camera load this competes with the control nodes "
+              "and causes teleop jitter. Prefer an nvenc preset.")
 
     env = YAMBimanualEnv(args.env_config)
 
@@ -538,7 +545,8 @@ def main():
                 if now_t - last_diag_t >= 1.0:
                     fps = ((step_count - recorded_at_last_diag) /
                            (now_t - last_diag_t))
-                    print(f"  [diag] recorded={step_count} fps={fps:.1f}")
+                    print(f"  [diag] recorded={step_count} fps={fps:.1f} "
+                          f"video_backlog={video_writer.peak_backlog()}")
                     last_diag_t = now_t
                     recorded_at_last_diag = step_count
 
@@ -552,11 +560,6 @@ def main():
                 if key == "q":
                     print(">> Quitting (q in main loop)")
                     raise SystemExit("main-loop-q")
-
-                # If neither queue had a message, sleep briefly so we don't
-                # busy-spin between gello samples (~5ms apart at 200Hz).
-                if gello_msg is None and new_obs is None:
-                    time.sleep(0.001)
 
             # If max_steps hit, wait for pedal to mark outcome
             if episode_outcome is None:
