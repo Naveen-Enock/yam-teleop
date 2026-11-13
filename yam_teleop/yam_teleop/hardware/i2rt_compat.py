@@ -120,10 +120,9 @@ def set_gripper_force_limit(robot, max_force_n: float) -> None:
 def gripper_torque_cap_margin(robot, cap_nm: float) -> float | None:
     """Max |command - actual| (normalized 0..1 units) that keeps kp*error <= cap.
 
-    The gripper is a position-PD motor, so its spring torque is
-    kp * (cmd - actual) in motor radians. Clamping the normalized command to
-    within this margin of the damping-neutral point caps the net torque (see
-    YamFollower._cap_gripper_command). Returns None when unavailable.
+    The gripper is a position-PD motor, so its torque is kp * (cmd - actual) in
+    motor radians. Clamping the normalized command to within this margin of the
+    actual position caps that torque. Returns None when unavailable.
     """
     if is_sim(robot) or robot._gripper_index is None or cap_nm <= 0:
         return None
@@ -132,15 +131,6 @@ def gripper_torque_cap_margin(robot, cap_nm: float) -> float | None:
     if kp <= 0 or stroke_rad <= 0:
         return None
     return (cap_nm / kp) / stroke_rad
-
-
-def gripper_kd_over_kp(robot) -> float:
-    """Gripper PD kd/kp ratio (0 when unavailable)."""
-    if is_sim(robot) or robot._gripper_index is None:
-        return 0.0
-    kp = float(robot._kp[robot._gripper_index])
-    kd = float(robot._kd[robot._gripper_index])
-    return kd / kp if kp > 0 else 0.0
 
 
 def nominal_gains(robot, n: int) -> tuple[np.ndarray, np.ndarray]:

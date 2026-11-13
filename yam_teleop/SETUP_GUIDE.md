@@ -132,32 +132,27 @@ stops it immediately).
 
 ## 4. Teaching-handle usage
 
-Each leader handle has a **trigger** and **two buttons** (top yellow, bottom
-white):
+Each leader handle has a **trigger** and **two buttons**:
 
 - **Trigger** → the follower gripper. Squeeze = close, release = open.
-- **Right top (yellow)** → end the episode and save as **SUCCESS**.
-- **Right bottom (white)** → end the episode as **FAILURE** (saved with a
-  `FAILED_` prefix).
-- **Left top (yellow) — clutch** → pause/resume teleop. Press once to
-  **suspend**: the follower freezes and the leader goes free (move it anywhere —
-  recording is paused). Press again to **resume**: the leader eases gently back
-  to the follower pose (a smooth, no-jerk return — tune its speed with
-  `resume_speed`), then control re-engages. Use it to recenter your arm
-  mid-episode.
-- **Left bottom (white)** → drop a sub-task boundary marker into the recording.
+- **Button 0 (marker)** → drop a sub-task boundary marker into the recording.
+- **Button 1 (clutch)** → pause/resume teleop. Press once to **suspend**: the
+  follower freezes and the leader goes free (move it anywhere — recording is
+  paused). Press again to **resume**: the leader eases gently back to the
+  follower pose (a smooth, no-jerk return — tune its speed with `resume_speed`),
+  then control re-engages. Use it to recenter your arm mid-episode.
 
-(If top/bottom are swapped on your handles, set `handle_top_button: 1` in
-`configs/leader.yaml`.)
+(Either handle's buttons work — they're global. If a button is mapped to the
+wrong function on your handles, flip the indices in `yam_leader_node.py`.)
 
 ### Data-collection cycle (per episode)
 1. **Follower reset** — arms move to the raised start pose, grippers open then close.
 2. **Leader match** — the leaders drive themselves to the follower pose; then
    **squeeze both triggers** to start teleop + recording.
-3. **Teleop** — move the leaders; followers track. Tap the **left white** button at each
-   sub-task transition. Use the **left yellow** button to clutch out/in as needed.
-4. **End** — **right yellow button / right foot pedal / `s`** = save SUCCESS;
-   **right white button / left foot pedal / `f`** = save FAILURE (saved with a `FAILED_` prefix). `m` also drops a marker.
+3. **Teleop** — move the leaders; followers track. Tap **button 0** at each
+   sub-task transition. Use **button 1** to clutch out/in as needed.
+4. **End** — **right foot pedal / `s`** = save SUCCESS; **left foot pedal / `f`**
+   = save FAILURE (saved with a `FAILED_` prefix). `m` also drops a marker.
    `q` quits. (Foot pedals optional; keyboard keys work if none are attached.)
 
 ---
@@ -194,7 +189,7 @@ In `leader.yaml`:
 In `robot.yaml`:
 - **`gripper_max_open`** — command-space open extent for the linear gripper.
 - **`gripper_max_force`** — lower = safer on rigid objects.
-- **`gripper_torque_cap`** — hard cap (Nm) on net gripper torque, always on (no stall detection).
+- **`gripper_torque_cap`** — hard cap (Nm) on stalled-gripper torque.
 - **`kp` / `kd`, `gravity_comp_factor`** (optional) — follower tracking gains and
   gravity comp. Unset = i2rt's YAM defaults. The pre-upgrade i2rt fork used
   kp 40 on joint 3 (now 10) and a flat 1.3 gravity factor — uncomment the

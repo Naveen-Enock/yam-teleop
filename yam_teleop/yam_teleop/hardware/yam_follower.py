@@ -25,6 +25,12 @@ import numpy as np
 
 from yam_teleop.hardware import i2rt_compat, per_joint
 
+# Gripper speed (normalized stroke-fraction/s) below which the torque cap treats
+# the gripper as stalled and engages; above it the cap releases so free motion
+# isn't throttled. Must stay below cruising speed (0.3 was too high).
+_GRIPPER_TORQUE_CAP_SPEED_GATE = 0.1
+
+
 class YamFollower:
     """YAM hardware wrapper with live observation refresh (i2rt-backed)."""
 
@@ -69,13 +75,11 @@ class YamFollower:
                 self.robot.update_kp_kd(new_kp, new_kd)
         self._torque_cap_margin = i2rt_compat.gripper_torque_cap_margin(
             self.robot, gripper_torque_cap)
-        # kd/kp of the gripper PD: converts measured velocity into the position
-        # offset that cancels the damping term (see _cap_gripper_command).
-        self._gripper_kd_over_kp = i2rt_compat.gripper_kd_over_kp(self.robot)
 
         self._joint_state = np.zeros(7, dtype=np.float32)
         self._joint_velocities = np.zeros(7, dtype=np.float32)
         self._joint_efforts = np.zeros(7, dtype=np.float32)
+        self._gripper_vel = 0.0
         self._last_sample_timestamp_ns = 0
         self._last_commanded_joint_state = np.zeros(7, dtype=np.float32)
 
@@ -117,24 +121,18 @@ class YamFollower:
             i2rt_compat.close_robot(self.robot)
 
     def _cap_gripper_command(self, cmd: float) -> float:
-        """Cap the gripper's net motor torque, always on (no stall detection).
+        """Cap gripper torque while stalled.
 
-        The motor applies tau = kp*(cmd - actual) - kd*vel (the command's
-        velocity target is 0). Clamping only the spring term would also cap
-        free-motion speed, since the spring has to beat the damping. So clamp
-        the command around the point where the two cancel,
-        actual + (kd/kp)*vel, which bounds |tau| <= gripper_torque_cap at every
-        command: in free motion the spring may lead by whatever offsets damping,
-        and the instant contact stops the gripper (vel -> 0) the allowance
-        collapses to cap/kp. Uses a fresh read so the clamp sees the current
-        velocity, not the last publish-loop sample.
+        Clamp the command to within +/- margin of the actual position so
+        |torque| = kp*(cmd-actual) stays <= gripper_torque_cap. Velocity-gated
+        so it doesn't throttle free motion. The cap must exceed the steady hold
+        torque or it fights i2rt's force limiter.
         """
-        obs = self.robot.get_observations()
-        actual = float(obs["gripper_pos"][0])
-        vel = float(obs["gripper_vel"][0])
-        center = actual + self._gripper_kd_over_kp * vel
+        if abs(self._gripper_vel) >= _GRIPPER_TORQUE_CAP_SPEED_GATE:
+            return cmd
+        actual = float(self._joint_state[6])
         m = self._torque_cap_margin
-        return float(np.clip(cmd, center - m, center + m))
+        return float(np.clip(cmd, actual - m, actual + m))
 
     def _refresh_state(self) -> None:
         i2rt_compat.assert_alive(self.robot, self.name)
@@ -153,6 +151,7 @@ class YamFollower:
         # i2rt reports arm efforts (6) and the gripper effort separately.
         self._joint_efforts = np.concatenate(
             [robot_obs["joint_eff"], robot_obs["gripper_eff"]]).astype(np.float32)
+        self._gripper_vel = float(robot_obs["gripper_vel"][0])
 
     def _normalize_joint_state(self, joint_state: np.ndarray) -> np.ndarray:
         joint_state = np.asarray(joint_state, dtype=np.float32).reshape(-1)

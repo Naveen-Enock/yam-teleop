@@ -111,12 +111,3 @@ match_max_delta: 0.01   # rad per control tick (~2 rad/s at 200Hz)
 # jerk. resume_min_duration floors the time so tiny moves still ease in smoothly.
 resume_speed: 0.4          # rad/s
 resume_min_duration: 0.5   # s
-
-# Teaching-handle buttons. Which io_inputs index is the TOP (yellow) button on
-# each handle (0 or 1); the other index is the BOTTOM (white) one. Mapping:
-#   right top (yellow)   -> end episode, SUCCESS (save)
-#   right bottom (white) -> end episode, FAILURE (terminate)
-#   left top (yellow)    -> clutch / pause toggle
-#   left bottom (white)  -> sub-task marker
-# If presses land on the wrong button, flip this to 1.
-handle_top_button: 0

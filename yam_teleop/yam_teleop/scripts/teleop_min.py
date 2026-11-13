@@ -16,9 +16,9 @@ Flow:
   3. Soft handoff: ease the follower from its reset pose onto the live leader
      stream over ~0.5s so engaging can't lurch it.
   4. Live: stream leader joints + gripper to the follower at --rate Hz.
-     Clutch (left handle top/yellow) suspends/resumes via the leader node; while
+     Clutch (handle button 1) suspends/resumes via the leader node; while
      SUSPENDED/RESUME_MATCH we stop commanding so the follower holds. Marker
-     presses (left handle bottom/white) are just printed here (collect_yam records them).
+     presses (button 0) are just printed here (collect_yam records them).
 
 This talks to the SAME ZMQ contract collect_data uses, so a clean run here also
 exercises the reset handshake the real pipeline depends on.

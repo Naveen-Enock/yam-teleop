@@ -56,10 +56,8 @@ gripper_max_force: 10.0
 # more sluggish.
 gripper_max_speed: 1.0
 
-# Hard cap (Nm) on net gripper motor torque (0 disables). Always on, no stall
-# detection: every gripper command is clamped so kp*(cmd-actual) - kd*vel stays
-# under this, so contact force is bounded the moment the gripper is stopped.
-# 1.5 Nm ~= 103 N gross. Must stay above the steady hold torque (~0.45 Nm at
-# gripper_max_force 10) or it fights the hold, and above friction (~0.3 Nm) or
-# the gripper can't move.
+# Hard cap (Nm) on gripper motor torque (0 disables). While the gripper is stalled,
+# robot_node clamps each gripper command to within cap/kp of the actual position
+# so torque = kp*(cmd-actual) stays under this. 1.5 Nm ~= 103 N gross. Must stay above the steady hold torque (~0.45 Nm at
+# gripper_max_force 10) or it fights the hold.
 gripper_torque_cap: 1.5
