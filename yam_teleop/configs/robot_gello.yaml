@@ -35,6 +35,6 @@ home_position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.85]
 # Max joint movement per step during shutdown reset (radians)
 shutdown_max_delta: 0.01
 
-# Gripper force limit when clogged (Newtons). Lower = safer for rigid objects.
+# Grip force (Newtons) once the gripper grasps something; see robot.yaml.
 # (i2rt's get_yam_robot hardcodes 50 N; robot_node replaces it with this.)
 gripper_max_force: 30.0
