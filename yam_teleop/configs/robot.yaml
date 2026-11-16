@@ -46,18 +46,22 @@ home_position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
 # Max joint movement per step during shutdown reset (radians)
 shutdown_max_delta: 0.01
 
-# Gripper force limit (Newtons; 0 disables). Lower = safer for rigid objects.
-# (i2rt's get_yam_robot hardcodes 50 N; robot_node replaces it with this.)
+# Grip force (Newtons; 0 disables all gripper force limiting). Once the gripper
+# hits an object and stalls, it latches into GRASP and presses with this force
+# and no harder, however hard the trigger is squeezed; opening releases it.
+# Same meaning as i2rt's limiter (force->torque map + ~0.3 Nm friction comp).
+# Runs in i2rt's 1 kHz loop — see yam_teleop/hardware/gripper_grasp.py.
 gripper_max_force: 10.0
 
 # Gripper command slew limit (stroke-fraction/s; 0 disables). Caps how fast the
-# commanded gripper position may change. Empirical comfort/responsiveness knob,
-# not a contact-spike guarantee. 1.0 => full close in ~1s. Lower = gentler but
-# more sluggish.
+# commanded gripper position may change. 1.0 => full close in ~1s. This sets
+# the brief impact spike when the gripper hits something at full speed (~3 Nm
+# at 1.0, momentum of the gripper itself); lower it for fragile objects.
 gripper_max_speed: 1.0
 
-# Hard cap (Nm) on gripper motor torque (0 disables). While the gripper is stalled,
-# robot_node clamps each gripper command to within cap/kp of the actual position
-# so torque = kp*(cmd-actual) stays under this. 1.5 Nm ~= 103 N gross. Must stay above the steady hold torque (~0.45 Nm at
-# gripper_max_force 10) or it fights the hold.
+# Ceiling (Nm) on gripper squeeze torque (0 disables). Bounds the squeeze from
+# the moment the gripper is stopped by an object until the GRASP latch drops it
+# to gripper_max_force (and on soft objects that keep compressing). Free
+# closing/opening speed is unaffected. 1.5 Nm ~= 103 N gross. Keep it above the
+# hold torque (~0.45 Nm at gripper_max_force 10) and above friction (~0.3 Nm).
 gripper_torque_cap: 1.5

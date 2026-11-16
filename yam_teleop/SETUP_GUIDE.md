@@ -193,8 +193,17 @@ In `leader.yaml`:
 
 In `robot.yaml`:
 - **`gripper_max_open`** — command-space open extent for the linear gripper.
-- **`gripper_max_force`** — lower = safer on rigid objects.
-- **`gripper_torque_cap`** — hard cap (Nm) on stalled-gripper torque.
+- **`gripper_max_force`** — grip force (N) once the gripper grasps something.
+  When the gripper hits an object and stops, `robot_node` prints
+  `[gripper L] GRASP: contact — holding at … Nm` and the gripper presses with
+  this force and no harder, however hard you squeeze; opening the trigger
+  prints `released`. Lower = safer on fragile objects.
+- **`gripper_torque_cap`** — ceiling (Nm) on the squeeze between contact and
+  that grasp latch, and on soft objects that keep compressing. Doesn't slow
+  free closing.
+- **`gripper_max_speed`** — closing speed; also sets the brief impact spike when
+  the gripper hits something fast (~3 Nm at 1.0). Lower it for fragile objects.
+  Watch all three with `robot_node --plot-gripper` (torque panel).
 - **`kp` / `kd`, `gravity_comp_factor`** (optional) — follower tracking gains and
   gravity comp. Unset = i2rt's YAM defaults. The pre-upgrade i2rt fork used
   kp 40 on joint 3 (now 10) and a flat 1.3 gravity factor — uncomment the

@@ -94,43 +94,56 @@ def close_robot(robot, timeout: float = 2.0) -> None:
     robot.close()
 
 
-def set_gripper_force_limit(robot, max_force_n: float) -> None:
-    """Set the gripper force limit (N); <= 0 disables the limiter.
+def install_grasp_controller(robot, max_force_n: float, torque_cap_nm: float):
+    """Replace i2rt's gripper force limiter with our GripperGraspController.
 
-    ``get_yam_robot`` hardcodes ``limit_gripper_force=50.0``. Rebuild the
-    limiter with our value instead (swapping the reference is atomic, so the
-    running control thread just picks up the new one).
+    i2rt calls ``robot._gripper_force_limiter.update(gripper_state)`` every
+    control tick (~1 kHz) whenever ``robot._limit_gripper_force > 0``, and
+    uses the returned raw position as the gripper command. We swap in our own
+    controller there (the reference swap is atomic, so the running control
+    thread just picks it up). ``get_yam_robot`` hardcodes a 50 N limiter.
+
+    The grip torque for ``max_force_n`` comes from i2rt's own per-gripper
+    force->torque map (linear or crank) plus i2rt's friction comp, so
+    ``gripper_max_force`` means what it did with i2rt's limiter.
+    Returns the controller, or None when disabled (max_force_n <= 0) / sim.
     """
     if is_sim(robot) or robot._gripper_index is None:
-        return
+        return None
     if max_force_n <= 0:
         robot._limit_gripper_force = -1.0
-        return
+        return None
     from i2rt.robots.utils import GripperForceLimiter
 
-    robot._gripper_force_limiter = GripperForceLimiter(
+    from yam_teleop.hardware.gripper_grasp import (
+        FRICTION_COMP_NM, GripperGraspController)
+
+    gi = robot._gripper_index
+    kp = float(robot._kp[gi])
+    # Borrow i2rt's force->torque map for this gripper type.
+    ref = GripperForceLimiter(
         max_force=float(max_force_n),
         gripper_type=robot._gripper_type,
         arm_type=robot._arm_type,
-        kp=float(robot._kp[robot._gripper_index]),
+        kp=kp,
     )
+    force_map = ref.gripper_force_torque_map
+
+    def hold_torque(raw_pos: float) -> float:
+        return abs(float(force_map(current_angle=raw_pos))) + FRICTION_COMP_NM
+
+    lo, hi = (float(x) for x in robot.remapper.joint_limits[0])
+    controller = GripperGraspController(
+        kp=kp,
+        kd=float(robot._kd[gi]),
+        raw_closed=lo,
+        raw_open=hi,
+        hold_torque_fn=hold_torque,
+        torque_cap=float(torque_cap_nm),
+    )
+    robot._gripper_force_limiter = controller
     robot._limit_gripper_force = float(max_force_n)
-
-
-def gripper_torque_cap_margin(robot, cap_nm: float) -> float | None:
-    """Max |command - actual| (normalized 0..1 units) that keeps kp*error <= cap.
-
-    The gripper is a position-PD motor, so its torque is kp * (cmd - actual) in
-    motor radians. Clamping the normalized command to within this margin of the
-    actual position caps that torque. Returns None when unavailable.
-    """
-    if is_sim(robot) or robot._gripper_index is None or cap_nm <= 0:
-        return None
-    kp = float(robot._kp[robot._gripper_index])
-    stroke_rad = float(np.abs(robot.remapper.joint_range[0]))  # open - closed, motor rad
-    if kp <= 0 or stroke_rad <= 0:
-        return None
-    return (cap_nm / kp) / stroke_rad
+    return controller
 
 
 def nominal_gains(robot, n: int) -> tuple[np.ndarray, np.ndarray]:

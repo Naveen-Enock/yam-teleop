@@ -18,12 +18,12 @@ import zmq
 
 from yam_teleop.hardware.yam_follower import YamFollower
 
-# Geometry of the linear_4310 gripper, used only to draw the force-limit "hold"
-# band on the torque plot. Mirrors i2rt's GripperForceLimiter: once a grasp is
-# detected it regulates the holding torque to
+# Geometry of the linear_4310 gripper, used only to draw the grip-force "hold"
+# band on the torque plot and to print the cap in Newtons. Once a grasp is
+# detected the grasp controller (hardware/gripper_grasp.py) holds
 #   tau = gripper_max_force * gripper_stroke / motor_stroke  (+ friction comp)
-# See i2rt/robots/utils.py: linear_gripper_force_torque_map (motor_stroke=6.57
-# rad, gripper_stroke=0.096 m) and GripperForceLimiter.update (adds ~0.3 Nm).
+# (i2rt's linear_gripper_force_torque_map: motor_stroke=6.57 rad,
+# gripper_stroke=0.096 m; friction comp ~0.3 Nm).
 _GRIPPER_MOTOR_STROKE_RAD = 6.57
 _GRIPPER_STROKE_M = 0.096
 _GRIPPER_FRICTION_COMP_NM = 0.3
@@ -111,7 +111,7 @@ def main():
     # can't slam the gripper shut and spike the torque before the force limiter
     # engages. Tune with the --plot-gripper torque panel.
     gripper_max_speed = cfg.get("gripper_max_speed", 0.0)
-    # Hard cap (Nm) on gripper motor torque (0 disables); see robot.yaml.
+    # Ceiling (Nm) on gripper squeeze torque (0 disables); see robot.yaml.
     gripper_torque_cap = cfg.get("gripper_torque_cap", 0.0)
 
     # Initialize both YAM arms
@@ -162,7 +162,8 @@ def main():
         print(f"Gripper slew limit: {gripper_max_speed:.2f} stroke-fraction/s")
     if gripper_torque_cap > 0:
         cap_n = gripper_torque_cap * _GRIPPER_MOTOR_STROKE_RAD / _GRIPPER_STROKE_M
-        print(f"Gripper torque cap: {gripper_torque_cap:.2f} Nm (~{cap_n:.0f} N gross)")
+        print(f"Gripper torque cap: {gripper_torque_cap:.2f} Nm (~{cap_n:.0f} N gross); "
+              f"grip force when holding: {gripper_max_force:.0f} N")
 
     def cmd_receiver():
         def slew_gripper(arm: str, raw_pos: float, dt: float) -> float:
@@ -227,7 +228,10 @@ def main():
         hold_band = None
         if "linear" in str(cfg["left"].get("gripper_type", "")).lower():
             tau_lo = gripper_max_force * _GRIPPER_STROKE_M / _GRIPPER_MOTOR_STROKE_RAD
-            hold_band = (tau_lo, tau_lo + _GRIPPER_FRICTION_COMP_NM)
+            tau_hi = tau_lo + _GRIPPER_FRICTION_COMP_NM
+            if gripper_torque_cap > 0:
+                tau_lo, tau_hi = min(tau_lo, gripper_torque_cap), min(tau_hi, gripper_torque_cap)
+            hold_band = (tau_lo, tau_hi)
         plotter = GripperPlotter(
             window_sec=args.plot_window_sec,
             speed_limit=(gripper_max_speed if gripper_max_speed > 0 else None),
@@ -240,6 +244,9 @@ def main():
     pbar = tqdm(desc="Robot node", unit="msg", smoothing=0.05, mininterval=1.0)
     t_debug = time.time()
     loop_i = 0
+    # Log grasp-controller transitions (it runs in i2rt's thread; poll here).
+    arms = {"L": left_arm, "R": right_arm}
+    was_grasping = {k: False for k in arms}
 
     try:
         while running:
@@ -267,6 +274,17 @@ def main():
                 },
             }
             state_pub.send_json(msg)
+
+            for side, arm in arms.items():
+                g = arm.gripper_grasping
+                if g != was_grasping[side]:
+                    was_grasping[side] = g
+                    if g:
+                        tqdm.write(f"[gripper {side}] GRASP: contact — holding at "
+                                   f"{arm.grasp.hold_nm:.2f} Nm "
+                                   f"(gripper_max_force), no harder")
+                    else:
+                        tqdm.write(f"[gripper {side}] released")
 
             # Feed the live gripper plot: position, finite-diff velocity, and
             # measured torque. Gripper is the 7th joint (index 6), so its
