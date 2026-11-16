@@ -5,15 +5,19 @@ Successor to collect_data.py for the YAM-leader teleop stack. Differences:
     The :5004 wire contract is identical, so env / broker / video are unchanged
     and the recorded HDF5 schema is the same (the leader stream is still stored
     under the "gello" group for downstream-tool compatibility).
-  - Sub-task MARKERS come from the teaching-handle marker button (button 0,
-    via the leader's monotonic buttons.marker_seq) OR the 'm' key. Stored as a
+  - Teaching-handle buttons (see yam_leader_node):
+      right top (yellow)   = end episode, SUCCESS (buttons.success_seq)
+      right bottom (white) = end episode, FAILURE (buttons.failure_seq)
+      left top (yellow)    = CLUTCH / pause toggle
+      left bottom (white)  = sub-task MARKER (buttons.marker_seq)
+  - Sub-task MARKERS (left bottom button OR the 'm' key) are stored as a
     `subtask_markers` dataset (step indices) in the HDF5 — no audio/microphone
     anymore (that path is deprecated and removed).
-  - CLUTCH (handle button 1): while the leader reports mode == "suspended" the
-    follower holds and recording pauses; on resume it continues seamlessly.
-  - Foot pedals are OPTIONAL and end the episode: single-button pedal or
+  - CLUTCH: while the leader reports mode == "suspended" the follower holds
+    and recording pauses; on resume it continues seamlessly.
+  - Foot pedals are OPTIONAL and also end the episode: single-button pedal or
     right pedal = SUCCESS, left pedal = FAILURE. Keyboard always works too:
-    s = SUCCESS, f = FAILURE, m = marker. 'q' quits in both cases.
+    s = SUCCESS, f = FAILURE, m = marker. 'q' quits in all cases.
 
 The old collect_data.py is left untouched for backward compatibility.
 
@@ -253,15 +257,39 @@ def main():
     print("  1. Follower reset to start pose (grippers open then close)")
     print("  2. Leader matches follower; squeeze both triggers to start")
     print("  3. Teleop + recording")
-    print("  4. Marker: handle button 0 / 'm'")
-    print("  5. Clutch: handle button 1 (pause/resume)")
-    print("  6. End: pedal / 's' = SUCCESS, 'f' = FAILURE")
+    print("  4. Marker: left handle bottom (white) / 'm'")
+    print("  5. Clutch: left handle top (yellow) (pause/resume)")
+    print("  6. End: right handle top (yellow) / pedal / 's' = SUCCESS,")
+    print("          right handle bottom (white) / 'f' = FAILURE")
     print(f"  Trigger close threshold: {args.gripper_threshold}")
     print(f"  Leader cmd port: {args.leader_cmd_port}")
     print(f"  Video codec: {args.video_codec}\n")
 
-    def poll_outcome(key):
-        """Return True (success) / False (failure) / None from pedal or key."""
+    # Last-seen handle success/failure counters; re-baselined at episode start
+    # so presses made during reset don't end the next episode.
+    handle_seq = {"success_seq": 0, "failure_seq": 0}
+
+    def baseline_handle(msg):
+        b = (msg or {}).get("buttons") or {}
+        for k in handle_seq:
+            handle_seq[k] = b.get(k, 0)
+
+    def poll_outcome(key, msg=None):
+        """Return True (success) / False (failure) / None from handle
+        buttons, pedal or key."""
+        if msg is not None:
+            b = msg.get("buttons") or {}
+            hit = {}
+            for k in handle_seq:
+                seq = b.get(k, handle_seq[k])
+                # Only an increase is a press; a drop means the leader node
+                # restarted (counters reset to 0) — just re-baseline.
+                hit[k] = seq > handle_seq[k]
+                handle_seq[k] = seq
+            if hit["failure_seq"]:
+                return False
+            if hit["success_seq"]:
+                return True
         if hub is not None:
             # Single-button pedal (KEY_AUDIO) ends the episode as SUCCESS;
             # failures use the 'f' key (or a 2-button pedal if attached).
@@ -334,6 +362,7 @@ def main():
             episode_outcome = None
             was_paused = False
             last_marker_seq = (leader_msg.get("buttons") or {}).get("marker_seq", 0)
+            baseline_handle(leader_msg)
 
             t0 = time.time()
             last_diag_t = time.monotonic()
@@ -356,7 +385,7 @@ def main():
                         print("  >> CLUTCH: paused (follower holding; "
                               "clutch again to resume)")
                         was_paused = True
-                    outcome = poll_outcome(key)
+                    outcome = poll_outcome(key, leader_msg)
                     if outcome is not None:
                         episode_outcome = outcome
                         break
@@ -420,7 +449,7 @@ def main():
                     last_diag_t = now_t
                     recorded_at_last_diag = step_count
 
-                outcome = poll_outcome(key)
+                outcome = poll_outcome(key, leader_msg)
                 if outcome is not None:
                     episode_outcome = outcome
                     break
@@ -428,10 +457,11 @@ def main():
                     raise SystemExit("main-loop-q")
 
             if episode_outcome is None:
-                print("  End episode: right/'s'=SUCCESS, left/'f'=FAILURE")
+                print("  End episode: right yellow/right pedal/'s'=SUCCESS, "
+                      "right white/left pedal/'f'=FAILURE")
                 while True:
                     key = keys.get_key()
-                    outcome = poll_outcome(key)
+                    outcome = poll_outcome(key, env.get_latest_gello())
                     if outcome is not None:
                         episode_outcome = outcome
                         break

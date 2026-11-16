@@ -132,27 +132,32 @@ stops it immediately).
 
 ## 4. Teaching-handle usage
 
-Each leader handle has a **trigger** and **two buttons**:
+Each leader handle has a **trigger** and **two buttons** (top yellow, bottom
+white):
 
 - **Trigger** → the follower gripper. Squeeze = close, release = open.
-- **Button 0 (marker)** → drop a sub-task boundary marker into the recording.
-- **Button 1 (clutch)** → pause/resume teleop. Press once to **suspend**: the
-  follower freezes and the leader goes free (move it anywhere — recording is
-  paused). Press again to **resume**: the leader eases gently back to the
-  follower pose (a smooth, no-jerk return — tune its speed with `resume_speed`),
-  then control re-engages. Use it to recenter your arm mid-episode.
+- **Right top (yellow)** → end the episode and save as **SUCCESS**.
+- **Right bottom (white)** → end the episode as **FAILURE** (saved with a
+  `FAILED_` prefix).
+- **Left top (yellow) — clutch** → pause/resume teleop. Press once to
+  **suspend**: the follower freezes and the leader goes free (move it anywhere —
+  recording is paused). Press again to **resume**: the leader eases gently back
+  to the follower pose (a smooth, no-jerk return — tune its speed with
+  `resume_speed`), then control re-engages. Use it to recenter your arm
+  mid-episode.
+- **Left bottom (white)** → drop a sub-task boundary marker into the recording.
 
-(Either handle's buttons work — they're global. If a button is mapped to the
-wrong function on your handles, flip the indices in `yam_leader_node.py`.)
+(If top/bottom are swapped on your handles, set `handle_top_button: 1` in
+`configs/leader.yaml`.)
 
 ### Data-collection cycle (per episode)
 1. **Follower reset** — arms move to the raised start pose, grippers open then close.
 2. **Leader match** — the leaders drive themselves to the follower pose; then
    **squeeze both triggers** to start teleop + recording.
-3. **Teleop** — move the leaders; followers track. Tap **button 0** at each
-   sub-task transition. Use **button 1** to clutch out/in as needed.
-4. **End** — **right foot pedal / `s`** = save SUCCESS; **left foot pedal / `f`**
-   = save FAILURE (saved with a `FAILED_` prefix). `m` also drops a marker.
+3. **Teleop** — move the leaders; followers track. Tap the **left white** button at each
+   sub-task transition. Use the **left yellow** button to clutch out/in as needed.
+4. **End** — **right yellow button / right foot pedal / `s`** = save SUCCESS;
+   **right white button / left foot pedal / `f`** = save FAILURE (saved with a `FAILED_` prefix). `m` also drops a marker.
    `q` quits. (Foot pedals optional; keyboard keys work if none are attached.)
 
 ---
@@ -230,7 +235,7 @@ converters/labelers keep working — it's just a legacy label now.
 | A CAN bus missing from `ip -br link show type can` | adapter unplugged / name not assigned / bus down — see §2b |
 | Leader arm **floats upward** | `gravity_comp_factor` too high for that (worn) arm — lower it per-arm |
 | Follower gripper opens when you squeeze | set `gripper_invert: false` in `leader.yaml` |
-| Marker/clutch button does the wrong thing | buttons swapped on your handle — swap `io_inputs` indices in `yam_leader_node.py` |
+| Handle buttons do the wrong thing (e.g. right yellow saves as FAILURE, left yellow drops a marker) | top/bottom swapped on your handles — set `handle_top_button: 1` in `configs/leader.yaml` |
 | `collect_yam` says "no pedals found" | expected without FootSwitch; use keyboard `s`/`f`/`m`/`q` |
 | Follower grippers move at startup | normal — `linear_4310` auto-calibration; keep them clear |
 | Leader/follower jump at teleop start | they weren't matched — let the reset "match" finish before squeezing |

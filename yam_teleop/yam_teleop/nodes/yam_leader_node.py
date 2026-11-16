@@ -42,11 +42,17 @@ pose (`safe_position` in leader.yaml) under stiff PD, THEN the motors switch off
 from the teleop start pose (the follower's home); mirrors robot_node's follower
 safe return.
 
-Teaching-handle buttons (io_inputs[0], io_inputs[1]; edge-detected; either
-handle counts, i.e. global):
-  - button 0 -> sub-task MARKER (published as a monotonic buttons.marker_seq
-                that consumers diff — survives their CONFLATE reads).
-  - button 1 -> CLUTCH toggle (COUPLED <-> SUSPENDED).
+Teaching-handle buttons (edge-detected, per handle). Each handle has a top
+(yellow) and bottom (white) button; which io_inputs index is the top one is set
+by `handle_top_button` in leader.yaml.
+  - RIGHT top (yellow)    -> end episode as SUCCESS (save). Published as a
+                             monotonic buttons.success_seq.
+  - RIGHT bottom (white)  -> end episode as FAILURE (terminate). Published as
+                             a monotonic buttons.failure_seq.
+  - LEFT top (yellow)     -> CLUTCH / pause toggle (COUPLED <-> SUSPENDED).
+  - LEFT bottom (white)   -> sub-task MARKER (buttons.marker_seq).
+All *_seq fields are monotonic counters that consumers diff, so a press
+survives their CONFLATE reads.
 
 Usage:
     python -m yam_teleop.nodes.yam_leader_node --config configs/leader.yaml
@@ -353,6 +359,12 @@ def main():
     # from/to zero so there's no jerk; min_duration keeps even tiny moves smooth.
     resume_speed = float(cfg.get("resume_speed", 0.4))            # rad/s
     resume_min_dur = float(cfg.get("resume_min_duration", 0.5))   # s
+    # Which io_inputs index is the TOP (yellow) handle button; the other is the
+    # BOTTOM (white) one.
+    top_btn = int(cfg.get("handle_top_button", 0))
+    if top_btn not in (0, 1):
+        raise ValueError(f"handle_top_button must be 0 or 1, got {top_btn}")
+    bot_btn = 1 - top_btn
     # Safety watchdog: if the controller stops sending its heartbeat (or any
     # command) for this long while engaged, the leader drops to IDLE (limp).
     watchdog_timeout = float(cfg.get("watchdog_timeout", 1.0))
@@ -443,10 +455,14 @@ def main():
     follower_right = None
     prev_marker_btn = False
     prev_clutch_btn = False
+    prev_success_btn = False
+    prev_failure_btn = False
     # Monotonic marker counter (NOT a one-shot bool): consumers read :5004 with
     # CONFLATE at ~60Hz, so a single-message bool would be dropped. They diff
     # this counter instead — a bump that lands between reads is still seen.
     marker_seq = 0
+    success_seq = 0   # right top (yellow): end episode, SUCCESS
+    failure_seq = 0   # right bottom (white): end episode, FAILURE
     last_cmd_t = None  # monotonic time of the last message from a controller
 
     try:
@@ -500,16 +516,28 @@ def main():
             except zmq.Again:
                 pass
 
-            # --- buttons (edge-detect; either handle) ---
-            marker_btn = bL[0] or bR[0]
-            clutch_btn = bL[1] or bR[1]
+            # --- buttons (edge-detect, per handle) ---
+            clutch_btn = bL[top_btn]    # left top (yellow)
+            marker_btn = bL[bot_btn]    # left bottom (white)
+            success_btn = bR[top_btn]   # right top (yellow)
+            failure_btn = bR[bot_btn]   # right bottom (white)
             marker = marker_btn and not prev_marker_btn
             clutch_edge = clutch_btn and not prev_clutch_btn
+            success_edge = success_btn and not prev_success_btn
+            failure_edge = failure_btn and not prev_failure_btn
             prev_marker_btn = marker_btn
             prev_clutch_btn = clutch_btn
+            prev_success_btn = success_btn
+            prev_failure_btn = failure_btn
             if marker:
                 marker_seq += 1
                 tqdm.write(f"[leader] MARKER #{marker_seq}")
+            if success_edge:
+                success_seq += 1
+                tqdm.write(f"[leader] SUCCESS button #{success_seq}")
+            if failure_edge:
+                failure_seq += 1
+                tqdm.write(f"[leader] FAILURE button #{failure_seq}")
 
             if clutch_edge:
                 if mode == "coupled":
@@ -573,6 +601,8 @@ def main():
                 "mode": mode,
                 "buttons": {
                     "marker_seq": marker_seq,  # monotonic; consumers diff it
+                    "success_seq": success_seq,
+                    "failure_seq": failure_seq,
                     "clutch": mode == "suspended",
                     "left": [bool(bL[0]), bool(bL[1])],
                     "right": [bool(bR[0]), bool(bR[1])],
