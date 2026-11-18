@@ -239,6 +239,26 @@ data/<task>/<task>_YYYYMMDD_HHMMSS/        # FAILED_<...> if failure
 The leader stream is stored under the `gello` group (and `gello_ns`) so existing
 converters/labelers keep working — it's just a legacy label now.
 
+### Replaying an episode on the robot
+
+`actions` is exactly what the followers were commanded, so an episode can be
+played back on the arms:
+
+1. Stop the collect script in pane [5] (`q` or Ctrl+C). Keep panes 1–4 running.
+2. In pane [5]:
+   ```bash
+   uv run python -m yam_teleop.scripts.replay_episode --episode data/<task>/<episode>/episode.hdf5
+   ```
+3. The arms reset to home, ease to the episode's first pose, then wait. Press
+   **Enter** to play it at the recorded 60 Hz. Press `q` in the preview window
+   or Ctrl+C to stop; the arms hold where they are.
+
+Replay is open-loop: put the objects back where they were when it was
+recorded. Options: `--start <s>` / `--end <s>` play a slice (seconds),
+`--no-reset` skips the home reset, `--no-display` hides the camera preview,
+`--yes` skips the Enter prompt. Clutch pauses aren't in `actions`, so the
+replay runs straight through them.
+
 ---
 
 ## 7. Troubleshooting
@@ -255,6 +275,7 @@ converters/labelers keep working — it's just a legacy label now.
 | Leader suddenly goes limp mid-use | watchdog fired — the controlling script stopped/lost its heartbeat; relaunch it |
 | A node exits with `i2rt control loop stopped (motor comms lost?)` | i2rt fails fast on lost CAN comms — check that arm's power / CAN cable / `ip -br link`, then restart the node |
 | Collect script stops at startup with `h264_nvenc test encode failed` | no NVIDIA driver / NVENC-less ffmpeg / other apps holding NVENC sessions — see §2a |
+| `replay_episode` says the robot command port is already in use | the collect script is still running — stop pane [5] first |
 | Teleop jitters while recording; `[diag] video_backlog` keeps climbing or an `encoder backlog full` warning prints | the encoder can't keep up — use a CPU-free preset (`nvenc_hq` → `nvenc` → `nvenc_fast`); never `h264*` at full camera load |
 
 ---

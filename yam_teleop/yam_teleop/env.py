@@ -361,6 +361,13 @@ class YAMBimanualEnv(gym.Env):
         self._move_to(current, self._rest_position, "Returning to rest pose...")
         self._hold_until_converged(self._rest_position)
 
+    def move_to(self, target: np.ndarray, msg: str = "Moving...") -> None:
+        """Gradually move both arms (and grippers) to a 14-dim target pose."""
+        target = np.asarray(target, dtype=np.float64).reshape(14)
+        current = self._get_current_joints(self._get_obs())
+        self._move_to(current, target, msg)
+        self._hold_until_converged(target)
+
     def _move_to(self, current: np.ndarray, target: np.ndarray,
                  msg: str) -> None:
         """Gradual linear interpolation from current to target."""
