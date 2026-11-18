@@ -36,6 +36,7 @@ class YamFollower:
         zero_gravity_mode: bool = True,
         limit_gripper_force: float = 50.0,
         gripper_torque_cap: float = -1.0,
+        gripper_max_speed: float = 0.0,
         gravity_comp_factor: Union[None, float, Sequence[float]] = None,
         kp: Optional[Sequence[float]] = None,
         kd: Optional[Sequence[float]] = None,
@@ -70,7 +71,8 @@ class YamFollower:
         # After any gain change: the controller sizes itself from the gripper
         # kp/kd. Runs inside i2rt's ~1 kHz loop (see gripper_grasp.py).
         self.grasp = i2rt_compat.install_grasp_controller(
-            self.robot, limit_gripper_force, gripper_torque_cap)
+            self.robot, limit_gripper_force, gripper_torque_cap,
+            gripper_max_speed)
 
         self._joint_state = np.zeros(7, dtype=np.float32)
         self._joint_velocities = np.zeros(7, dtype=np.float32)

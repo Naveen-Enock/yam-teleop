@@ -12,22 +12,26 @@ The gripper motor runs on-board PD (MIT mode), so in normalized units
 with K = kp * stroke and D = kd * stroke. The only way to bound the squeeze is
 to keep the command close to the measured position. But moving takes torque
 too: at 1 stroke/s the damping term alone eats ~3.3 Nm on the linear_4310, so a
-fixed tight clamp would throttle free closing to a crawl. Hence two states:
+fixed tight clamp would throttle free closing to a crawl.
 
-FREE    Command = operator target, but never more than
-            (cap + D * min(target_speed, gripper_speed)) / K
-        past the gripper (closing speeds only). While the gripper keeps up
-        with the operator's slew-limited target, that is exactly enough lead
-        to cancel the damping, so free closing runs at full speed. When the
-        gripper is stopped by an object its speed drops to zero and the
-        allowance collapses to cap / K, so the squeeze is bounded by `cap`
-        within a few ms of contact. gripper_speed is measured from encoder
-        position over a 5 ms window (clean, unlike the motor's velocity
-        reading) and can never exceed the commanded target speed, so it can't
-        pump the gripper faster than the operator asked.
+The operator target arrives as a staircase (teleop sends ~60 Hz, i2rt holds
+each value), which makes the gripper surge and stall every step. So the target
+is first ramped at `max_speed` inside this 1 kHz loop, giving the motor a
+smooth trajectory. Then one of two states:
+
+FREE    Command = ramped target, but never more than
+            (cap + D * gripper_speed) / K
+        past the gripper (closing speed, at most max_speed). While the
+        gripper is moving, that is enough lead to cancel the damping, so free
+        closing runs at full speed. When an object stops the gripper its
+        speed drops to zero and the allowance collapses to cap / K, so the
+        squeeze is bounded by `cap` within a few ms of contact.
+        gripper_speed is measured from encoder position over a 5 ms window
+        (clean, unlike the motor's velocity reading).
 GRASP   Entered when the gripper has stalled (|speed| < stall_speed) while
-        squeezing > detect_torque and the operator still asks for more, held
-        for detect_time. The command is then kept `hold / K` past the measured
+        squeezing > detect_torque (default 0.9 * cap — well above leadscrew
+        stiction, so friction alone can't trigger it) and the operator still
+        asks for more, for detect_time. The command is then kept `hold / K` past the measured
         position: the gripper presses with the configured grip force and no
         harder, however hard the trigger is squeezed, and stays put. The
         motor's own damping is untouched, so this is stable.
@@ -71,9 +75,10 @@ class GripperGraspController:
         raw_open: float,
         hold_torque_fn: Callable[[float], float],
         torque_cap: float = 0.0,
+        max_speed: float = 0.0,
         detect_torque: float | None = None,
         stall_speed: float = 0.05,
-        detect_time: float = 0.005,
+        detect_time: float = 0.03,
         slip_travel: float = 0.04,
         clock: Callable[[], float] = time.monotonic,
     ):
@@ -84,8 +89,11 @@ class GripperGraspController:
             force at that motor position, friction comp included.
         torque_cap: ceiling (Nm) on the stalled squeeze before and during a
             grasp. <= 0 disables the cap (only the grasp hold limits force).
-        detect_torque: squeeze (Nm) that counts as contact. Default:
-            max(2 * friction, 1.2 * nominal hold torque), kept under the cap.
+        max_speed: gripper speed limit (stroke-fraction/s), the same value
+            robot_node slews with. The target is ramped at this rate in-loop.
+            <= 0 disables the ramp.
+        detect_torque: squeeze (Nm) that counts as contact. Default: 0.9 *
+            cap, or max(2 * friction, 1.2 * hold torque) with no cap.
         stall_speed: |gripper speed| (stroke-fraction/s) counted as stalled.
         detect_time: how long contact must persist before latching (s).
         slip_travel: closing travel (stroke-fraction) after latching that
@@ -102,9 +110,10 @@ class GripperGraspController:
         self._cap = float(torque_cap) if torque_cap and torque_cap > 0 else None
         nominal_hold = self._hold_at_norm(0.5)
         if detect_torque is None:
-            detect_torque = max(2 * FRICTION_COMP_NM, 1.2 * nominal_hold)
-            if self._cap is not None:
-                detect_torque = min(detect_torque, 0.9 * self._cap)
+            detect_torque = (0.9 * self._cap if self._cap is not None
+                             else max(2 * FRICTION_COMP_NM, 1.2 * nominal_hold))
+        self._max_speed = float(max_speed) if max_speed and max_speed > 0 else None
+        self._lead_speed = self._max_speed if self._max_speed is not None else 2.0
         self._detect = float(detect_torque)
         self._stall_speed = float(stall_speed)
         self._detect_time = float(detect_time)
@@ -112,9 +121,8 @@ class GripperGraspController:
         self._clock = clock
 
         self._last_cmd: float | None = None
-        self._last_target: float | None = None
+        self._ramp: float | None = None   # in-loop smoothed target
         self._last_t: float | None = None
-        self._target_vel = 0.0       # filtered, normalized/s (+ = opening)
         self._pos_hist: collections.deque = collections.deque(maxlen=64)
         self._pressing_since: float | None = None
         self._latch_pos = 0.0
@@ -145,20 +153,23 @@ class GripperGraspController:
     def update(self, gripper_state: dict) -> float:
         """Return the raw gripper position command for this control tick."""
         p = float(gripper_state["current_normalized_qpos"])
-        target = float(gripper_state["target_normalized_qpos"])
+        commanded = float(gripper_state["target_normalized_qpos"])
         now = self._clock()
         if self._last_t is None:
             dt = 0.0
-            self._last_cmd = target
-            self._last_target = target
+            self._last_cmd = commanded
+            self._ramp = commanded
         else:
             dt = min(max(now - self._last_t, 0.0), 0.02)
         self._last_t = now
 
-        if dt > 0:
-            self._target_vel = _lpf(self._target_vel,
-                                    (target - self._last_target) / dt, dt, 0.01)
-        self._last_target = target
+        # Smooth the ~60 Hz command staircase into a 1 kHz ramp.
+        if self._max_speed is None:
+            self._ramp = commanded
+        else:
+            step = self._max_speed * dt
+            self._ramp = min(max(commanded, self._ramp - step), self._ramp + step)
+        target = self._ramp
         v = self._speed(now, p)
         squeeze = self._K * (p - self._last_cmd) + self._D * v
         self.squeeze_nm = _lpf(self.squeeze_nm, squeeze, dt, 0.003)
@@ -190,7 +201,7 @@ class GripperGraspController:
         if self.grasping:
             cmd = max(target, p - m_hold)
         elif self._cap is not None:
-            closing_speed = min(max(0.0, -self._target_vel), max(0.0, -v))
+            closing_speed = min(max(0.0, -v), self._lead_speed)
             lead = (self._cap + self._D * closing_speed) / self._K
             cmd = max(target, p - lead)
         # Opening is never limited; keep within the normalized range.

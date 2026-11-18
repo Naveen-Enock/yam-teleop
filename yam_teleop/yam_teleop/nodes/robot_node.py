@@ -79,6 +79,7 @@ def make_yam_arm(cfg: dict, side: str) -> YamFollower:
         zero_gravity_mode=arm_cfg["zero_gravity_mode"],
         limit_gripper_force=cfg.get("gripper_max_force", 50.0),
         gripper_torque_cap=cfg.get("gripper_torque_cap", 0.0),
+        gripper_max_speed=cfg.get("gripper_max_speed", 0.0),
         gravity_comp_factor=arm_cfg.get(
             "gravity_comp_factor", cfg.get("gravity_comp_factor")),
         kp=arm_cfg.get("kp", cfg.get("kp")),

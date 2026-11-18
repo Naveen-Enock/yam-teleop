@@ -54,9 +54,11 @@ shutdown_max_delta: 0.01
 gripper_max_force: 10.0
 
 # Gripper command slew limit (stroke-fraction/s; 0 disables). Caps how fast the
-# commanded gripper position may change. 1.0 => full close in ~1s. This sets
-# the brief impact spike when the gripper hits something at full speed (~3 Nm
-# at 1.0, momentum of the gripper itself); lower it for fragile objects.
+# commanded gripper position may change. 1.0 => full close in ~1s; 1.5 => ~0.75s.
+# The grasp controller also ramps the gripper at this rate inside i2rt's 1 kHz
+# loop, smoothing the ~60 Hz teleop command steps. Higher = faster, but a
+# bigger brief impact spike when the gripper hits something at full speed
+# (~3.5 Nm at 1.0, ~4.8 Nm at 1.5 — the gripper's own momentum).
 gripper_max_speed: 1.0
 
 # Ceiling (Nm) on gripper squeeze torque (0 disables). Bounds the squeeze from
