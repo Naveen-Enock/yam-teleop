@@ -80,6 +80,7 @@ def make_yam_arm(cfg: dict, side: str) -> YamFollower:
         limit_gripper_force=cfg.get("gripper_max_force", 50.0),
         gripper_torque_cap=cfg.get("gripper_torque_cap", 0.0),
         gripper_max_speed=cfg.get("gripper_max_speed", 0.0),
+        gripper_max_open=cfg.get("gripper_max_open", 0.85),
         gravity_comp_factor=arm_cfg.get(
             "gravity_comp_factor", cfg.get("gravity_comp_factor")),
         kp=arm_cfg.get("kp", cfg.get("kp")),
@@ -166,12 +167,18 @@ def main():
         print(f"Gripper torque cap: {gripper_torque_cap:.2f} Nm (~{cap_n:.0f} N gross); "
               f"grip force when holding: {gripper_max_force:.0f} N")
 
+    # Arms whose grasp controller already ramps the gripper at
+    # gripper_max_speed inside i2rt's 1 kHz loop. Slewing here as well would
+    # wind up past a held object and delay every release.
+    in_loop_ramp = {"left": left_arm.grasp is not None,
+                    "right": right_arm.grasp is not None}
+
     def cmd_receiver():
         def slew_gripper(arm: str, raw_pos: float, dt: float) -> float:
             """Clamp the commanded gripper pos to <= gripper_max_speed rate."""
             target = min(raw_pos, gripper_max_open)
             prev = grip_state[arm]
-            if gripper_max_speed > 0 and dt > 0:
+            if gripper_max_speed > 0 and dt > 0 and not in_loop_ramp[arm]:
                 step = gripper_max_speed * dt
                 target = float(np.clip(target, prev - step, prev + step))
             grip_state[arm] = target

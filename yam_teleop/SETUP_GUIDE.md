@@ -204,7 +204,9 @@ In `robot.yaml`:
   the gripper partway in free air (it logs a false `GRASP`).
 - **`gripper_max_speed`** — closing speed (1.0 ≈ 1 s full close, 1.5 ≈ 0.75 s);
   also sets the brief impact spike when the gripper hits something fast
-  (~3.5 Nm at 1.0, ~4.8 Nm at 1.5). Lower it for fragile objects.
+  (~3.2 Nm at 1.0, ~4.3 Nm at 1.5). Lower it for fragile objects. Opening
+  after a grasp starts as soon as the trigger starts opening, even if it
+  was squeezed well past the object.
   Watch all three with `robot_node --plot-gripper` (torque panel).
 - **`kp` / `kd`, `gravity_comp_factor`** (optional) — follower tracking gains and
   gravity comp. Unset = i2rt's YAM defaults. The pre-upgrade i2rt fork used

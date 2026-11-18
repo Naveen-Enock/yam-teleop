@@ -35,9 +35,21 @@ GRASP   Entered when the gripper has stalled (|speed| < stall_speed) while
         position: the gripper presses with the configured grip force and no
         harder, however hard the trigger is squeezed, and stays put. The
         motor's own damping is untouched, so this is stable.
-        Leaves GRASP when the operator opens past the hold point, or when the
-        gripper travels `slip_travel` further closed (object slipped out or
-        removed), so it can close freely again.
+        Leaves GRASP as soon as the operator starts opening the trigger
+        (`release_travel` back from its tightest point), or when the gripper
+        travels `slip_travel` further closed (object slipped out or removed),
+        so it can close freely again.
+
+Release without delay: while holding, the operator usually has the trigger
+squeezed well past the object. Opening would otherwise wait for the trigger
+(and the ramp) to travel back to the object before the gripper moves. So on
+release the trigger is remapped piecewise-linearly through
+    (0, 0) -> (trigger now, object) -> (max_open, max_open)
+so the gripper opens from the object the moment the trigger opens, still
+reaches max_open at a full open and fully closes at a full squeeze (the knee
+moves with the trigger whenever it closes). The remap ends once the trigger is
+back at max_open or a full squeeze, or at the next grasp. The in-loop
+ramp also never winds up past the actual command.
 
 The state is latched with hysteresis, so it can't flicker between modes, and
 the motor's noisy velocity reading is never used — an earlier attempt that fed
@@ -80,6 +92,8 @@ class GripperGraspController:
         stall_speed: float = 0.05,
         detect_time: float = 0.03,
         slip_travel: float = 0.04,
+        release_travel: float = 0.02,
+        max_open: float = 1.0,
         clock: Callable[[], float] = time.monotonic,
     ):
         """
@@ -98,6 +112,10 @@ class GripperGraspController:
         detect_time: how long contact must persist before latching (s).
         slip_travel: closing travel (stroke-fraction) after latching that
             means the object is gone.
+        release_travel: trigger opening (stroke-fraction) from its tightest
+            point during a grasp that releases it.
+        max_open: largest operator command (robot_node's gripper_max_open);
+            the post-release remap ends there.
         """
         self._lo = float(raw_closed)
         self._range = float(raw_open) - float(raw_closed)
@@ -118,6 +136,8 @@ class GripperGraspController:
         self._stall_speed = float(stall_speed)
         self._detect_time = float(detect_time)
         self._slip = float(slip_travel)
+        self._release_travel = float(release_travel)
+        self._max_open = min(max(float(max_open), 0.05), 1.0)
         self._clock = clock
 
         self._last_cmd: float | None = None
@@ -126,6 +146,9 @@ class GripperGraspController:
         self._pos_hist: collections.deque = collections.deque(maxlen=64)
         self._pressing_since: float | None = None
         self._latch_pos = 0.0
+        self._trig_min = 1.0       # tightest operator command during a grasp
+        self._remap: tuple[float, float] | None = None  # (trigger, gripper) knee
+        self._remap_last_c = 0.0
         # Telemetry (read from other threads; plain attribute writes).
         self.grasping = False
         self.squeeze_nm = 0.0
@@ -149,6 +172,47 @@ class GripperGraspController:
         t0, p0 = h[0]
         return (p - p0) / (now - t0) if now - t0 > 1e-4 else 0.0
 
+    def _release(self, start: float) -> None:
+        """Leave GRASP; open from `start` instead of the squeezed trigger."""
+        self.grasping = False
+        self._pressing_since = None
+        if self._trig_min < start < self._max_open:
+            self._remap = (self._trig_min, start)
+            self._remap_last_c = self._trig_min
+        self._ramp = max(self._ramp, start)
+
+    def _remapped(self, c: float) -> float:
+        """Operator command after a release (see module docstring).
+
+        The knee follows the trigger: whenever it moves closed, the knee is
+        re-anchored at the current point, so from there a full squeeze maps
+        to fully closed (even if the release happened at a full squeeze);
+        opening maps from the knee to max_open. Continuous at every reversal.
+        """
+        if self._remap is None:
+            return c
+        if c >= self._max_open:
+            self._remap = None
+            return c
+
+        def on_curve(x: float) -> float:
+            kc, kg = self._remap
+            if x >= kc:
+                return kg + (x - kc) * (self._max_open - kg) / (self._max_open - kc)
+            return kg * max(x, 0.0) / kc if kc > 1e-6 else 0.0
+
+        last = self._remap_last_c
+        if c < last and last > self._remap[0]:
+            self._remap = (last, on_curve(last))  # turned to close: re-anchor
+        g = on_curve(c)
+        if c < self._remap[0]:
+            self._remap = (c, g)
+        self._remap_last_c = c
+        if g - c < 0.005:  # mapping is back to normal
+            self._remap = None
+            return c
+        return g
+
     # -- i2rt limiter interface -------------------------------------------
     def update(self, gripper_state: dict) -> float:
         """Return the raw gripper position command for this control tick."""
@@ -163,20 +227,28 @@ class GripperGraspController:
             dt = min(max(now - self._last_t, 0.0), 0.02)
         self._last_t = now
 
-        # Smooth the ~60 Hz command staircase into a 1 kHz ramp.
-        if self._max_speed is None:
-            self._ramp = commanded
-        else:
-            step = self._max_speed * dt
-            self._ramp = min(max(commanded, self._ramp - step), self._ramp + step)
-        target = self._ramp
         v = self._speed(now, p)
-        squeeze = self._K * (p - self._last_cmd) + self._D * v
-        self.squeeze_nm = _lpf(self.squeeze_nm, squeeze, dt, 0.003)
-
         hold = self._hold_at_norm(p)
         self.hold_nm = hold
         m_hold = hold / self._K
+
+        # Release on the first bit of trigger opening, not when the trigger
+        # finally gets back to the object.
+        if self.grasping:
+            self._trig_min = min(self._trig_min, commanded)
+            if commanded > self._trig_min + self._release_travel:
+                self._release(p - m_hold)
+        goal = self._remapped(commanded)
+
+        # Smooth the ~60 Hz command staircase into a 1 kHz ramp.
+        if self._max_speed is None:
+            self._ramp = goal
+        else:
+            step = self._max_speed * dt
+            self._ramp = min(max(goal, self._ramp - step), self._ramp + step)
+        target = self._ramp
+        squeeze = self._K * (p - self._last_cmd) + self._D * v
+        self.squeeze_nm = _lpf(self.squeeze_nm, squeeze, dt, 0.003)
 
         if self.grasping:
             released = target >= p - 0.5 * m_hold
@@ -184,6 +256,7 @@ class GripperGraspController:
             if released or slipped:
                 self.grasping = False
                 self._pressing_since = None
+                self._remap = None  # slipped: follow the trigger as-is
         else:
             pressing = (self.squeeze_nm > self._detect
                         and abs(v) < self._stall_speed
@@ -196,6 +269,8 @@ class GripperGraspController:
                 self.grasping = True
                 self.grasp_count += 1
                 self._latch_pos = p
+                self._trig_min = commanded
+                self._remap = None
 
         cmd = target
         if self.grasping:
@@ -206,5 +281,8 @@ class GripperGraspController:
             cmd = max(target, p - lead)
         # Opening is never limited; keep within the normalized range.
         cmd = min(max(cmd, 0.0), 1.0)
+        # Anti-windup: the ramp never sits further closed than the command
+        # actually sent, so opening starts from where the gripper is.
+        self._ramp = max(self._ramp, cmd)
         self._last_cmd = cmd
         return self._to_raw(cmd)
