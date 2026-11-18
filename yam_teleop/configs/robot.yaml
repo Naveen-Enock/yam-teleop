@@ -64,6 +64,8 @@ gripper_max_speed: 1.0
 # Ceiling (Nm) on gripper squeeze torque (0 disables). Bounds the squeeze from
 # the moment the gripper is stopped by an object until the GRASP latch drops it
 # to gripper_max_force (and on soft objects that keep compressing). Free
-# closing/opening speed is unaffected. 1.5 Nm ~= 103 N gross. Keep it above the
-# hold torque (~0.45 Nm at gripper_max_force 10) and above friction (~0.3 Nm).
-gripper_torque_cap: 1.5
+# closing/opening speed is unaffected. 1.0 Nm ~= 69 N gross. Contact is detected
+# at 0.9 x this, so keep it above the leadscrew's stiction (~0.8 Nm): too low and
+# the gripper stops partway in free air and logs a false GRASP. Also keep it
+# above the hold torque (~0.45 Nm at gripper_max_force 10).
+gripper_torque_cap: 1.0

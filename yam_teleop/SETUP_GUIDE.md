@@ -200,7 +200,8 @@ In `robot.yaml`:
   prints `released`. Lower = safer on fragile objects.
 - **`gripper_torque_cap`** — ceiling (Nm) on the squeeze between contact and
   that grasp latch, and on soft objects that keep compressing. Doesn't slow
-  free closing.
+  free closing. Default 1.0; don't go below ~0.9, or friction alone can stop
+  the gripper partway in free air (it logs a false `GRASP`).
 - **`gripper_max_speed`** — closing speed (1.0 ≈ 1 s full close, 1.5 ≈ 0.75 s);
   also sets the brief impact spike when the gripper hits something fast
   (~3.5 Nm at 1.0, ~4.8 Nm at 1.5). Lower it for fragile objects.
