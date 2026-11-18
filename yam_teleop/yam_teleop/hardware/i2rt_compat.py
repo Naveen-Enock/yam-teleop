@@ -94,7 +94,8 @@ def close_robot(robot, timeout: float = 2.0) -> None:
     robot.close()
 
 
-def install_grasp_controller(robot, max_force_n: float, torque_cap_nm: float):
+def install_grasp_controller(robot, max_force_n: float, torque_cap_nm: float,
+                             max_speed: float = 0.0):
     """Replace i2rt's gripper force limiter with our GripperGraspController.
 
     i2rt calls ``robot._gripper_force_limiter.update(gripper_state)`` every
@@ -140,6 +141,7 @@ def install_grasp_controller(robot, max_force_n: float, torque_cap_nm: float):
         raw_open=hi,
         hold_torque_fn=hold_torque,
         torque_cap=float(torque_cap_nm),
+        max_speed=float(max_speed),
     )
     robot._gripper_force_limiter = controller
     robot._limit_gripper_force = float(max_force_n)

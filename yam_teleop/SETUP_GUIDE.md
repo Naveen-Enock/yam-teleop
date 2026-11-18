@@ -201,8 +201,9 @@ In `robot.yaml`:
 - **`gripper_torque_cap`** — ceiling (Nm) on the squeeze between contact and
   that grasp latch, and on soft objects that keep compressing. Doesn't slow
   free closing.
-- **`gripper_max_speed`** — closing speed; also sets the brief impact spike when
-  the gripper hits something fast (~3 Nm at 1.0). Lower it for fragile objects.
+- **`gripper_max_speed`** — closing speed (1.0 ≈ 1 s full close, 1.5 ≈ 0.75 s);
+  also sets the brief impact spike when the gripper hits something fast
+  (~3.5 Nm at 1.0, ~4.8 Nm at 1.5). Lower it for fragile objects.
   Watch all three with `robot_node --plot-gripper` (torque panel).
 - **`kp` / `kd`, `gravity_comp_factor`** (optional) — follower tracking gains and
   gravity comp. Unset = i2rt's YAM defaults. The pre-upgrade i2rt fork used
